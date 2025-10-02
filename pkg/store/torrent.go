@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sirrobot01/decypharr/internal/request"
-	"github.com/sirrobot01/decypharr/internal/utils"
-	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/dylanmazurek/decypharr/internal/request"
+	"github.com/dylanmazurek/decypharr/internal/utils"
+	debridTypes "github.com/dylanmazurek/decypharr/pkg/debrid"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/types"
 )
 
 func (s *Store) AddTorrent(ctx context.Context, importReq *ImportRequest) error {
@@ -61,6 +61,7 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 	downloadingStatuses := client.GetDownloadingStatus()
 	_arr := importReq.Arr
 	backoff := time.NewTimer(s.refreshInterval)
+
 	defer backoff.Stop()
 	for debridTorrent.Status != "downloaded" {
 		s.logger.Debug().Msgf("%s <- (%s) Download Progress: %.2f%%", debridTorrent.Debrid, debridTorrent.Name, debridTorrent.Progress)
@@ -79,9 +80,11 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 			}
 			s.logger.Error().Msgf("Error checking status: %v", err)
 			s.markTorrentAsFailed(torrent)
+
 			go func() {
 				_arr.Refresh()
 			}()
+
 			importReq.markAsFailed(err, torrent, debridTorrent)
 			return
 		}
@@ -99,6 +102,7 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 		nextInterval := min(s.refreshInterval*2, 30*time.Second)
 		backoff.Reset(nextInterval)
 	}
+
 	var torrentSymlinkPath string
 	var err error
 	debridTorrent.Arr = _arr
@@ -108,11 +112,13 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 
 	onFailed := func(err error) {
 		s.markTorrentAsFailed(torrent)
+
 		go func() {
 			if deleteErr := client.DeleteTorrent(debridTorrent.Id); deleteErr != nil {
 				s.logger.Warn().Err(deleteErr).Msgf("Failed to delete torrent %s", debridTorrent.Id)
 			}
 		}()
+
 		s.logger.Error().Err(err).Msgf("Error occured while processing torrent %s", debridTorrent.Name)
 		importReq.markAsFailed(err, torrent, debridTorrent)
 	}
@@ -155,15 +161,19 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 			// User is using either zurg or debrid webdav
 			torrentSymlinkPath, err = s.processSymlink(torrent, debridTorrent) // /mnt/symlinks/{category}/MyTVShow/
 		}
+
 		if err != nil {
 			onFailed(err)
 			return
 		}
+
 		if torrentSymlinkPath == "" {
 			err = fmt.Errorf("symlink path is empty for %s", debridTorrent.Name)
 			onFailed(err)
 		}
+
 		onSuccess(torrentSymlinkPath)
+
 		return
 	case "download":
 		// Download action, we will download the torrent to the specified folder
@@ -199,11 +209,13 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 func (s *Store) markTorrentAsFailed(t *Torrent) *Torrent {
 	t.State = "error"
 	s.torrents.AddOrUpdate(t)
+
 	go func() {
 		if err := request.SendDiscordMessage("download_failed", "error", t.discordContext()); err != nil {
 			s.logger.Error().Msgf("Error sending discord message: %v", err)
 		}
 	}()
+
 	return t
 }
 
@@ -295,6 +307,7 @@ func (s *Store) updateTorrent(t *Torrent, debridTorrent *types.Torrent) *Torrent
 			if t.IsReady() {
 				t.State = "pausedUP"
 				s.torrents.Update(t)
+
 				return t
 			}
 

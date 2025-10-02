@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dylanmazurek/decypharr/internal/utils"
 	"github.com/go-co-op/gocron/v2"
-	"github.com/sirrobot01/decypharr/internal/utils"
 )
 
 func (s *Store) addToQueue(importReq *ImportRequest) error {
@@ -73,6 +73,7 @@ func (s *Store) StartQueueWorkers(ctx context.Context) error {
 	// Start the scheduler
 	s.scheduler.Start()
 	s.logger.Debug().Msg("Store worker started")
+
 	return nil
 }
 
@@ -96,6 +97,7 @@ func (s *Store) trackAvailableSlots(ctx context.Context) {
 
 	for name, slots := range availableSlots {
 		s.logger.Debug().Msgf("Available slots for %s: %d", name, slots)
+
 		// If slots are available, process the next import request from the queue
 		for slots > 0 {
 			select {
@@ -106,6 +108,7 @@ func (s *Store) trackAvailableSlots(ctx context.Context) {
 					s.logger.Error().Err(err).Msg("Error processing from queue")
 					return // Exit on error
 				}
+
 				slots-- // Decrease the available slots after processing
 			}
 		}
@@ -118,9 +121,11 @@ func (s *Store) processFromQueue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
 	if importReq == nil {
 		return nil
 	}
+
 	return s.AddTorrent(ctx, importReq)
 }
 

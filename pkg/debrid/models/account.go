@@ -1,10 +1,10 @@
-package types
+package models
 
 import (
 	"sync"
 	"time"
 
-	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/config"
 )
 
 type Accounts struct {
@@ -36,14 +36,16 @@ func NewAccounts(debridConf config.Debrid) *Accounts {
 }
 
 type Account struct {
-	Debrid      string // e.g., "realdebrid", "torbox", etc.
-	Order       int
-	Disabled    bool
-	Token       string `json:"token"`
-	links       map[string]*DownloadLink
-	mu          sync.RWMutex
+	DebridProvider string
+	Order          int
+	IsDisabled     bool
+	Token          string `json:"token"`
+	links          map[string]*DownloadLink
+
 	TrafficUsed int64  `json:"traffic_used"` // Traffic used in bytes
 	Username    string `json:"username"`     // Username for the account
+
+	mu sync.RWMutex
 }
 
 func (a *Accounts) Active() []*Account {
@@ -52,7 +54,7 @@ func (a *Accounts) Active() []*Account {
 
 	activeAccounts := make([]*Account, 0)
 	for _, acc := range a.accounts {
-		if !acc.Disabled {
+		if !acc.IsDisabled {
 			activeAccounts = append(activeAccounts, acc)
 		}
 	}
@@ -79,14 +81,13 @@ func (a *Accounts) Current() *Account {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Double-check after acquiring write lock
 	if a.current != nil {
 		return a.current
 	}
 
 	activeAccounts := make([]*Account, 0)
 	for _, acc := range a.accounts {
-		if !acc.Disabled {
+		if !acc.IsDisabled {
 			activeAccounts = append(activeAccounts, acc)
 		}
 	}
@@ -106,7 +107,7 @@ func (a *Accounts) Disable(account *Account) {
 	if a.current == account {
 		var newCurrent *Account
 		for _, acc := range a.accounts {
-			if !acc.Disabled {
+			if !acc.IsDisabled {
 				newCurrent = acc
 				break
 			}
@@ -120,7 +121,7 @@ func (a *Accounts) Reset() {
 	defer a.mu.Unlock()
 	for _, acc := range a.accounts {
 		acc.resetDownloadLinks()
-		acc.Disabled = false
+		acc.IsDisabled = false
 	}
 
 	if len(a.accounts) > 0 {
@@ -222,7 +223,7 @@ func (a *Accounts) Update(index int, account *Account) {
 	}
 }
 
-func newAccount(debridName, token string, index int) *Account {
+func newAccount(debridType, token string, index int) *Account {
 	return &Account{
 		Debrid: debridName,
 		Token:  token,

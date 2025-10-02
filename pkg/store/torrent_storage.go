@@ -26,10 +26,12 @@ func loadTorrentsFromJSON(filename string) (Torrents, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	torrents := make(Torrents)
 	if err := json.Unmarshal(data, &torrents); err != nil {
 		return nil, err
 	}
+
 	return torrents, nil
 }
 
@@ -39,6 +41,7 @@ func newTorrentStorage(filename string) *TorrentStorage {
 	if err != nil {
 		torrents = make(Torrents)
 	}
+
 	// Create a new Storage
 	return &TorrentStorage{
 		torrents: torrents,
@@ -49,6 +52,7 @@ func newTorrentStorage(filename string) *TorrentStorage {
 func (ts *TorrentStorage) Add(torrent *Torrent) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+
 	ts.torrents[keyPair(torrent.Hash, torrent.Category)] = torrent
 	go func() {
 		err := ts.saveToFile()
@@ -61,6 +65,7 @@ func (ts *TorrentStorage) Add(torrent *Torrent) {
 func (ts *TorrentStorage) AddOrUpdate(torrent *Torrent) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+
 	ts.torrents[keyPair(torrent.Hash, torrent.Category)] = torrent
 	go func() {
 		err := ts.saveToFile()
@@ -73,6 +78,7 @@ func (ts *TorrentStorage) AddOrUpdate(torrent *Torrent) {
 func (ts *TorrentStorage) Get(hash, category string) *Torrent {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
+
 	torrent, exists := ts.torrents[keyPair(hash, category)]
 	if !exists && category == "" {
 		// Try to find the torrent without knowing the category
@@ -88,14 +94,17 @@ func (ts *TorrentStorage) Get(hash, category string) *Torrent {
 func (ts *TorrentStorage) GetAll(category string, filter string, hashes []string) []*Torrent {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
+
 	torrents := make([]*Torrent, 0)
 	for _, torrent := range ts.torrents {
 		if category != "" && torrent.Category != category {
 			continue
 		}
+
 		if filter != "" && torrent.State != filter {
 			continue
 		}
+
 		torrents = append(torrents, torrent)
 	}
 
@@ -110,6 +119,7 @@ func (ts *TorrentStorage) GetAll(category string, filter string, hashes []string
 		}
 		torrents = filtered
 	}
+
 	return torrents
 }
 
@@ -155,6 +165,7 @@ func (ts *TorrentStorage) GetAllSorted(category string, filter string, hashes []
 func (ts *TorrentStorage) Update(torrent *Torrent) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+
 	ts.torrents[keyPair(torrent.Hash, torrent.Category)] = torrent
 	go func() {
 		err := ts.saveToFile()
@@ -183,6 +194,7 @@ func (ts *TorrentStorage) Delete(hash, category string, removeFromDebrid bool) {
 	if torrent == nil {
 		return
 	}
+
 	st := Get()
 	// Check if torrent is queued for download
 

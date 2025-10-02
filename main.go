@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/sirrobot01/decypharr/cmd/decypharr"
-	"github.com/sirrobot01/decypharr/internal/config"
 	"log"
 	"os"
 	"os/signal"
 	"runtime/debug"
 	"syscall"
+
+	"github.com/dylanmazurek/decypharr/cmd/decypharr"
+	"github.com/dylanmazurek/decypharr/internal/config"
 )
 
 func main() {
@@ -19,6 +20,7 @@ func main() {
 			debug.PrintStack()
 		}
 	}()
+
 	var configPath string
 	flag.StringVar(&configPath, "config", "/data", "path to the data folder")
 	flag.Parse()
@@ -29,7 +31,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := decypharr.Start(ctx); err != nil {
+	err := decypharr.Start(ctx)
+	if err != nil {
 		log.Fatal(err)
 	}
 }

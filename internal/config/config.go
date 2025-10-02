@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -148,6 +149,7 @@ type Config struct {
 func (c *Config) JsonFile() string {
 	return filepath.Join(c.Path, "config.json")
 }
+
 func (c *Config) AuthFile() string {
 	return filepath.Join(c.Path, "auth.json")
 }
@@ -157,28 +159,37 @@ func (c *Config) TorrentsFile() string {
 }
 
 func (c *Config) loadConfig() error {
+	if configPath == "env" {
+		return nil
+	}
+
 	// Load the config file
 	if configPath == "" {
 		return fmt.Errorf("config path not set")
 	}
+
 	c.Path = configPath
 	file, err := os.ReadFile(c.JsonFile())
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("Config file not found, creating a new one at %s\n", c.JsonFile())
-			// Create a default config file if it doesn't exist
 			if err := c.createConfig(c.Path); err != nil {
 				return fmt.Errorf("failed to create config file: %w", err)
 			}
+
 			return c.Save()
 		}
+
 		return fmt.Errorf("error reading config file: %w", err)
 	}
 
-	if err := json.Unmarshal(file, &c); err != nil {
+	err = json.Unmarshal(file, &c)
+	if err != nil {
 		return fmt.Errorf("error unmarshaling config: %w", err)
 	}
+
 	c.setDefaults()
+
 	return nil
 }
 
@@ -214,9 +225,11 @@ func validateRepair(config *Repair) error {
 	if !config.Enabled {
 		return nil
 	}
+
 	if config.Interval == "" {
 		return errors.New("repair interval is required")
 	}
+
 	return nil
 }
 
@@ -244,6 +257,7 @@ func generateAPIToken() (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
+
 	return hex.EncodeToString(bytes), nil
 }
 
@@ -253,12 +267,15 @@ func SetConfigPath(path string) {
 
 func Get() *Config {
 	once.Do(func() {
-		instance = &Config{} // Initialize instance first
-		if err := instance.loadConfig(); err != nil {
+		instance = &Config{}
+
+		err := instance.loadConfig()
+		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "configuration Error: %v\n", err)
 			os.Exit(1)
 		}
 	})
+
 	return instance
 }
 
@@ -279,10 +296,12 @@ func (c *Config) GetMaxFileSize() int64 {
 	if c.MaxFileSize == "" {
 		return 0
 	}
+
 	s, err := ParseSize(c.MaxFileSize)
 	if err != nil {
 		return 0
 	}
+
 	return s
 }
 
@@ -290,12 +309,15 @@ func (c *Config) IsSizeAllowed(size int64) bool {
 	if size == 0 {
 		return true // Maybe the debrid hasn't reported the size yet
 	}
+
 	if c.GetMinFileSize() > 0 && size < c.GetMinFileSize() {
 		return false
 	}
+
 	if c.GetMaxFileSize() > 0 && size > c.GetMaxFileSize() {
 		return false
 	}
+
 	return true
 }
 
@@ -303,6 +325,7 @@ func (c *Config) GetAuth() *Auth {
 	if !c.UseAuth {
 		return nil
 	}
+
 	if c.Auth == nil {
 		c.Auth = &Auth{}
 		if _, err := os.Stat(c.AuthFile()); err == nil {
@@ -312,6 +335,7 @@ func (c *Config) GetAuth() *Auth {
 			}
 		}
 	}
+
 	return c.Auth
 }
 
@@ -321,6 +345,7 @@ func (c *Config) SaveAuth(auth *Auth) error {
 	if err != nil {
 		return err
 	}
+
 	return os.WriteFile(c.AuthFile(), data, 0644)
 }
 
@@ -332,6 +357,7 @@ func (c *Config) NeedsAuth() bool {
 	if c.UseAuth {
 		return c.GetAuth().Username == ""
 	}
+
 	return false
 }
 
@@ -376,9 +402,7 @@ func (c *Config) updateDebrid(d Debrid) Debrid {
 		directories = make(map[string]WebdavDirectories)
 	}
 
-	for name, dir := range d.Directories {
-		directories[name] = dir
-	}
+	maps.Copy(directories, d.Directories)
 	d.Directories = directories
 
 	d.RcUrl = cmp.Or(d.RcUrl, c.WebDav.RcUrl)
@@ -454,7 +478,6 @@ func (c *Config) setDefaults() {
 }
 
 func (c *Config) Save() error {
-
 	c.setDefaults()
 
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -462,14 +485,15 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	if err := os.WriteFile(c.JsonFile(), data, 0644); err != nil {
+	err = os.WriteFile(c.JsonFile(), data, 0644)
+	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
 func (c *Config) createConfig(path string) error {
-	// Create the directory if it doesn't exist
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
@@ -484,6 +508,7 @@ func (c *Config) createConfig(path string) error {
 		Categories:      []string{"sonarr", "radarr"},
 		RefreshInterval: 15,
 	}
+
 	return nil
 }
 

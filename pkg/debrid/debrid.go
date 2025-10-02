@@ -7,26 +7,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/utils"
-	"github.com/sirrobot01/decypharr/pkg/arr"
-	"github.com/sirrobot01/decypharr/pkg/debrid/providers/alldebrid"
-	"github.com/sirrobot01/decypharr/pkg/debrid/providers/debridlink"
-	"github.com/sirrobot01/decypharr/pkg/debrid/providers/realdebrid"
-	"github.com/sirrobot01/decypharr/pkg/debrid/providers/torbox"
-	debridStore "github.com/sirrobot01/decypharr/pkg/debrid/store"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
-	"github.com/sirrobot01/decypharr/pkg/rclone"
+	"github.com/dylanmazurek/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/logger"
+	"github.com/dylanmazurek/decypharr/internal/utils"
+	"github.com/dylanmazurek/decypharr/pkg/arr"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/models"
+	debridModels "github.com/dylanmazurek/decypharr/pkg/debrid/models"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/providers/alldebrid"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/providers/debridlink"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/providers/realdebrid"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/providers/torbox"
+	debridStore "github.com/dylanmazurek/decypharr/pkg/debrid/store"
+	"github.com/dylanmazurek/decypharr/pkg/rclone"
 )
 
 type Debrid struct {
 	cache  *debridStore.Cache // Could be nil if not using WebDAV
-	client types.Client       // HTTP client for making requests to the debrid service
-}
-
-func (de *Debrid) Client() types.Client {
-	return de.client
+	client models.Client
 }
 
 func (de *Debrid) Cache() *debridStore.Cache {
@@ -56,6 +53,7 @@ func NewStorage(rcManager *rclone.Manager) *Storage {
 	if bindAddress == "" {
 		bindAddress = "localhost"
 	}
+
 	webdavUrl := fmt.Sprintf("http://%s:%s%s/webdav", bindAddress, cfg.Port, cfg.URLBase)
 
 	for _, dc := range cfg.Debrids {
@@ -64,23 +62,26 @@ func NewStorage(rcManager *rclone.Manager) *Storage {
 			_logger.Error().Err(err).Str("Debrid", dc.Name).Msg("failed to connect to debrid client")
 			continue
 		}
+
 		var (
 			cache   *debridStore.Cache
 			mounter *rclone.Mount
 		)
-		_log := client.Logger()
+
 		if dc.UseWebDav {
 			if cfg.Rclone.Enabled && rcManager != nil {
 				mounter = rclone.NewMount(dc.Name, dc.RcloneMountPath, webdavUrl, rcManager)
 			}
+
 			cache = debridStore.NewDebridCache(dc, client, mounter)
-			_log.Info().Msg("Debrid Service started with WebDAV")
+			_logger.Info().Msg("Debrid Service started with WebDAV")
 		} else {
-			_log.Info().Msg("Debrid Service started")
+			_logger.Info().Msg("Debrid Service started")
 		}
+
 		debrids[dc.Name] = &Debrid{
 			cache:  cache,
-			client: client,
+			client: *client,
 		}
 	}
 
@@ -88,15 +89,18 @@ func NewStorage(rcManager *rclone.Manager) *Storage {
 		debrids:  debrids,
 		lastUsed: "",
 	}
+
 	return d
 }
 
 func (d *Storage) Debrid(name string) *Debrid {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
 	if debrid, exists := d.debrids[name]; exists {
 		return debrid
 	}
+
 	return nil
 }
 
@@ -160,7 +164,7 @@ func (d *Storage) Debrids() map[string]*Debrid {
 	return debridsCopy
 }
 
-func (d *Storage) Client(name string) types.Client {
+func (d *Storage) Client(name string) models.Client {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -187,11 +191,11 @@ func (d *Storage) Reset() {
 	d.lastUsed = ""
 }
 
-func (d *Storage) Clients() map[string]types.Client {
+func (d *Storage) Clients() map[string]models.Client {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	clientsCopy := make(map[string]types.Client)
+	clientsCopy := make(map[string]models.Client)
 	for name, debrid := range d.debrids {
 		if debrid != nil && debrid.client != nil {
 			clientsCopy[name] = debrid.client
@@ -215,11 +219,11 @@ func (d *Storage) Caches() map[string]*debridStore.Cache {
 	return cachesCopy
 }
 
-func (d *Storage) FilterClients(filter func(types.Client) bool) map[string]types.Client {
+func (d *Storage) FilterClients(filter func(models.Client) bool) map[string]models.Client {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	filteredClients := make(map[string]types.Client)
+	filteredClients := make(map[string]models.Client)
 	for name, client := range d.debrids {
 		if client != nil && filter(client.client) {
 			filteredClients[name] = client.client
@@ -229,32 +233,46 @@ func (d *Storage) FilterClients(filter func(types.Client) bool) map[string]types
 	return filteredClients
 }
 
-func createDebridClient(dc config.Debrid) (types.Client, error) {
+func createDebridClient(dc config.Debrid) (*models.Client, error) {
+	var newClient models.Client
+	var err error
+
 	switch dc.Name {
 	case "realdebrid":
-		return realdebrid.New(dc)
+		newClient, err = realdebrid.New(dc)
 	case "torbox":
-		return torbox.New(dc)
+		newClient, err = torbox.New(dc)
 	case "debridlink":
-		return debridlink.New(dc)
+		newClient, err = debridlink.New(dc)
 	case "alldebrid":
-		return alldebrid.New(dc)
+		newClient, err = alldebrid.New(dc)
 	default:
-		return realdebrid.New(dc)
+		newClient, err = realdebrid.New(dc)
 	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if newClient == nil {
+		return nil, fmt.Errorf("failed to create debrid client: %s", dc.Name)
+	}
+
+	return &newClient, nil
 }
 
 func Process(ctx context.Context, store *Storage, selectedDebrid string, magnet *utils.Magnet, a *arr.Arr, action string, overrideDownloadUncached bool) (*types.Torrent, error) {
-	debridTorrent := &types.Torrent{
+	debridTorrent := &debridModels.DebridTorrent{
 		InfoHash: magnet.InfoHash,
 		Magnet:   magnet,
 		Name:     magnet.Name,
 		Arr:      a,
 		Size:     magnet.Size,
-		Files:    make(map[string]types.File),
+		Files:    make(map[string]models.File),
 	}
 
-	clients := store.FilterClients(func(c types.Client) bool {
+	clients := store.FilterClients(func(c models.Client) bool {
+		clientOptions := c.op
 		if selectedDebrid != "" && c.Name() != selectedDebrid {
 			return false
 		}

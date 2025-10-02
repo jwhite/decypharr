@@ -1,4 +1,4 @@
-package types
+package models
 
 import (
 	"fmt"
@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/utils"
-	"github.com/sirrobot01/decypharr/pkg/arr"
+	"github.com/dylanmazurek/decypharr/internal/logger"
+	"github.com/dylanmazurek/decypharr/internal/utils"
+	"github.com/dylanmazurek/decypharr/pkg/arr"
 )
 
-type Torrent struct {
+type DebridTorrent struct {
 	Id               string          `json:"id"`
 	InfoHash         string          `json:"info_hash"`
 	Name             string          `json:"name"`
@@ -20,7 +20,7 @@ type Torrent struct {
 	Filename         string          `json:"filename"`
 	OriginalFilename string          `json:"original_filename"`
 	Size             int64           `json:"size"`
-	Bytes            int64           `json:"bytes"` // Size of only the files that are downloaded
+	Bytes            int64           `json:"bytes"`
 	Magnet           *utils.Magnet   `json:"magnet"`
 	Files            map[string]File `json:"files"`
 	Status           string          `json:"status"`
@@ -31,22 +31,25 @@ type Torrent struct {
 	Links            []string        `json:"links"`
 	MountPath        string          `json:"mount_path"`
 	DeletedFiles     []string        `json:"deleted_files"`
+	IsActive         *bool           `json:"is_active,omitempty"`
 
 	Debrid string `json:"debrid"`
 
 	Arr *arr.Arr `json:"arr"`
 
-	SizeDownloaded   int64 `json:"-"` // This is used for local download
+	SizeDownloaded   int64 `json:"-"`
 	DownloadUncached bool  `json:"-"`
 
 	sync.Mutex
 }
 
-func (t *Torrent) GetSymlinkFolder(parent string) string {
-	return filepath.Join(parent, t.Arr.Name, t.Folder)
+func (t *DebridTorrent) GetSymlinkFolder(parent string) string {
+	symlinkFolder := filepath.Join(parent, t.Arr.Name, t.Folder)
+
+	return symlinkFolder
 }
 
-func (t *Torrent) GetMountFolder(rClonePath string) (string, error) {
+func (t *DebridTorrent) GetMountFolder(rClonePath string) (*string, error) {
 	_log := logger.Default()
 	possiblePaths := []string{
 		t.OriginalFilename,
@@ -58,15 +61,16 @@ func (t *Torrent) GetMountFolder(rClonePath string) (string, error) {
 		_p := filepath.Join(rClonePath, path)
 		_log.Trace().Msgf("Checking path: %s", _p)
 		_, err := os.Stat(_p)
+
 		if !os.IsNotExist(err) {
-			return path, nil
+			return &path, nil
 		}
 	}
 
-	return "", fmt.Errorf("no path found")
+	return nil, fmt.Errorf("no path found")
 }
 
-func (t *Torrent) GetFile(filename string) (File, bool) {
+func (t *DebridTorrent) GetFile(filename string) (File, bool) {
 	f, ok := t.Files[filename]
 	if !ok {
 		return File{}, false
@@ -74,13 +78,14 @@ func (t *Torrent) GetFile(filename string) (File, bool) {
 	return f, !f.Deleted
 }
 
-func (t *Torrent) GetFiles() []File {
+func (t *DebridTorrent) GetFiles() []File {
 	files := make([]File, 0, len(t.Files))
 	for _, f := range t.Files {
 		if !f.Deleted {
 			files = append(files, f)
 		}
 	}
+
 	return files
 }
 
@@ -99,7 +104,7 @@ type File struct {
 	DownloadLink *DownloadLink `json:"-"`
 }
 
-func (t *Torrent) Cleanup(remove bool) {
+func (t *DebridTorrent) Cleanup(remove bool) {
 	if remove {
 		err := os.Remove(t.Filename)
 		if err != nil {

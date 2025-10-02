@@ -5,7 +5,7 @@ info:
   version: 1.0.0
   contact:
     name: Decypharr
-    url: https://github.com/sirrobot01/decypharr
+    url: https://github.com/dylanmazurek/decypharr
 
 servers:
   - url: /api
