@@ -126,6 +126,7 @@ func (a *Arr) CleanupQueue() error {
 		episodeId int
 		seasonNum int
 	}
+
 	cleanups := make(map[int][]messedUp)
 	for _, q := range queue {
 		isMessedUp := false
@@ -167,7 +168,6 @@ func (a *Arr) CleanupQueue() error {
 	}
 
 	// Delete the messed up episodes from queue
-
 	payload := struct {
 		Ids []int `json:"ids"`
 	}{
@@ -187,5 +187,6 @@ func (a *Arr) CleanupQueue() error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }

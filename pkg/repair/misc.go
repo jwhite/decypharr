@@ -2,9 +2,9 @@ package repair
 
 import (
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/arr"
-	"github.com/sirrobot01/decypharr/pkg/debrid/store"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/dylanmazurek/decypharr/pkg/arr"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/store"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/types"
 	"os"
 	"path/filepath"
 )

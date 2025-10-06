@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/anacrolix/torrent/metainfo"
-	"github.com/sirrobot01/decypharr/internal/request"
+	"github.com/dylanmazurek/decypharr/internal/request"
 	"io"
 	"log"
 	"net/http"

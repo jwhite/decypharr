@@ -72,7 +72,7 @@ docker-compose up -d
 ## Binary Installation
 If you prefer not to use Docker, you can download and run the binary directly.
 
-Download your OS-specific release from the [release page](https://github.com/sirrobot01/decypharr/releases).
+Download your OS-specific release from the [release page](https://github.com/dylanmazurek/decypharr/releases).
 Create a configuration file (see Configuration)
 Run the binary:
 

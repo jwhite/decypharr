@@ -3,7 +3,7 @@ package server
 import (
 	"cmp"
 	"encoding/json"
-	"github.com/sirrobot01/decypharr/pkg/store"
+	"github.com/dylanmazurek/decypharr/pkg/store"
 	"net/http"
 )
 

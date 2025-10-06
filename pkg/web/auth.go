@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/config"
 	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"strings"

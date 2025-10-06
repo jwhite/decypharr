@@ -6,19 +6,26 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/request"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dylanmazurek/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/logger"
+	"github.com/dylanmazurek/decypharr/internal/request"
+	"github.com/rs/zerolog"
 )
 
-// Type is a type of arr
-type Type string
+type ArrType int8
+
+const (
+	ARRSONARR ArrType = iota
+	ARRRADARR
+	ARRLIDARR
+	ARRREADARR
+)
 
 var sharedClient = &http.Client{
 	Transport: &http.Transport{
@@ -27,23 +34,16 @@ var sharedClient = &http.Client{
 	Timeout: 60 * time.Second,
 }
 
-const (
-	Sonarr  Type = "sonarr"
-	Radarr  Type = "radarr"
-	Lidarr  Type = "lidarr"
-	Readarr Type = "readarr"
-)
-
 type Arr struct {
-	Name             string `json:"name"`
-	Host             string `json:"host"`
-	Token            string `json:"token"`
-	Type             Type   `json:"type"`
-	Cleanup          bool   `json:"cleanup"`
-	SkipRepair       bool   `json:"skip_repair"`
-	DownloadUncached *bool  `json:"download_uncached"`
-	SelectedDebrid   string `json:"selected_debrid,omitempty"` // The debrid service selected for this arr
-	Source           string `json:"source,omitempty"`          // The source of the arr, e.g. "auto", "manual". Auto means it was automatically detected from the arr
+	Name             string  `json:"name"`
+	Host             string  `json:"host"`
+	Token            string  `json:"token"`
+	Type             ArrType `json:"type"`
+	Cleanup          bool    `json:"cleanup"`
+	SkipRepair       bool    `json:"skip_repair"`
+	DownloadUncached *bool   `json:"download_uncached"`
+	SelectedDebrid   string  `json:"selected_debrid,omitempty"` // The debrid service selected for this arr
+	Source           string  `json:"source,omitempty"`          // The source of the arr, e.g. "auto", "manual". Auto means it was automatically detected from the arr
 }
 
 func New(name, host, token string, cleanup, skipRepair bool, downloadUncached *bool, selectedDebrid, source string) *Arr {

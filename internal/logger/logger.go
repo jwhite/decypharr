@@ -3,7 +3,7 @@ package logger
 import (
 	"fmt"
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/config"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"os"
 	"path/filepath"

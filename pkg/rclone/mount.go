@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/config"
 	"net/url"
 	"path/filepath"
 	"strings"

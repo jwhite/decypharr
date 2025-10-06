@@ -3,7 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sirrobot01/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/config"
 	"net/http"
 	"strings"
 )

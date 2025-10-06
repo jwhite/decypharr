@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/rclone"
+	"github.com/dylanmazurek/decypharr/pkg/rclone"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,16 +17,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/types"
 
 	"encoding/json"
 	_ "time/tzdata"
 
 	"github.com/go-co-op/gocron/v2"
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/internal/utils"
+	"github.com/dylanmazurek/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/logger"
+	"github.com/dylanmazurek/decypharr/internal/utils"
 )
 
 type WebDavFolderNaming string

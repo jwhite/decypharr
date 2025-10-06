@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/logger"
+	"github.com/dylanmazurek/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/logger"
 )
 
 // Manager handles the rclone RC server and provides mount operations

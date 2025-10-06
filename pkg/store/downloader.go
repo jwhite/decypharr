@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/types"
 
 	"github.com/cavaliergopher/grab/v3"
-	"github.com/sirrobot01/decypharr/internal/utils"
+	"github.com/dylanmazurek/decypharr/internal/utils"
 )
 
 func grabber(client *grab.Client, url, filename string, byterange *[2]int64, progressCallback func(int64, int64)) error {

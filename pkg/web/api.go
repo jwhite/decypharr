@@ -2,7 +2,7 @@ package web
 
 import (
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/store"
+	"github.com/dylanmazurek/decypharr/pkg/store"
 	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"strings"
@@ -10,11 +10,11 @@ import (
 
 	"encoding/json"
 	"github.com/go-chi/chi/v5"
-	"github.com/sirrobot01/decypharr/internal/config"
-	"github.com/sirrobot01/decypharr/internal/request"
-	"github.com/sirrobot01/decypharr/internal/utils"
-	"github.com/sirrobot01/decypharr/pkg/arr"
-	"github.com/sirrobot01/decypharr/pkg/version"
+	"github.com/dylanmazurek/decypharr/internal/config"
+	"github.com/dylanmazurek/decypharr/internal/request"
+	"github.com/dylanmazurek/decypharr/internal/utils"
+	"github.com/dylanmazurek/decypharr/pkg/arr"
+	"github.com/dylanmazurek/decypharr/pkg/version"
 )
 
 func (wb *Web) handleGetArrs(w http.ResponseWriter, r *http.Request) {

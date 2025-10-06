@@ -3,9 +3,9 @@ package qbit
 import (
 	"context"
 	"fmt"
-	"github.com/sirrobot01/decypharr/internal/utils"
-	"github.com/sirrobot01/decypharr/pkg/arr"
-	"github.com/sirrobot01/decypharr/pkg/store"
+	"github.com/dylanmazurek/decypharr/internal/utils"
+	"github.com/dylanmazurek/decypharr/pkg/arr"
+	"github.com/dylanmazurek/decypharr/pkg/store"
 	"io"
 	"mime/multipart"
 	"strings"
@@ -61,8 +61,8 @@ func (q *QBit) RefreshTorrent(t *store.Torrent) bool {
 func (q *QBit) GetTorrentProperties(t *store.Torrent) *TorrentProperties {
 	return &TorrentProperties{
 		AdditionDate:           t.AddedOn,
-		Comment:                "Debrid Blackhole <https://github.com/sirrobot01/decypharr>",
-		CreatedBy:              "Debrid Blackhole <https://github.com/sirrobot01/decypharr>",
+		Comment:                "Debrid Blackhole <https://github.com/dylanmazurek/decypharr>",
+		CreatedBy:              "Debrid Blackhole <https://github.com/dylanmazurek/decypharr>",
 		CreationDate:           t.AddedOn,
 		DlLimit:                -1,
 		UpLimit:                -1,

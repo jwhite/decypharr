@@ -5,8 +5,8 @@ import (
 	"embed"
 	"github.com/gorilla/sessions"
 	"github.com/rs/zerolog"
-	"github.com/sirrobot01/decypharr/internal/logger"
-	"github.com/sirrobot01/decypharr/pkg/store"
+	"github.com/dylanmazurek/decypharr/internal/logger"
+	"github.com/dylanmazurek/decypharr/pkg/store"
 	"html/template"
 	"os"
 )

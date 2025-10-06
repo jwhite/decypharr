@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirrobot01/decypharr/pkg/debrid/store"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/store"
 )
 
 var streamingTransport = &http.Transport{

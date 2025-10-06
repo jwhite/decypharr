@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"github.com/dylanmazurek/decypharr/pkg/debrid/types"
 	"io"
 	"net/http"
 	"os"

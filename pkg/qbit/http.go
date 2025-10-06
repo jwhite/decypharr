@@ -1,8 +1,8 @@
 package qbit
 
 import (
-	"github.com/sirrobot01/decypharr/internal/request"
-	"github.com/sirrobot01/decypharr/pkg/arr"
+	"github.com/dylanmazurek/decypharr/internal/request"
+	"github.com/dylanmazurek/decypharr/pkg/arr"
 	"net/http"
 	"path/filepath"
 	"strings"
