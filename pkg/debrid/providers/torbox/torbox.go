@@ -413,15 +413,20 @@ func (tb *Torbox) CheckStatus(torrent *types.Torrent) (*types.Torrent, error) {
 
 func (tb *Torbox) DeleteTorrent(torrentId string) error {
 	url := fmt.Sprintf("%s/api/torrents/controltorrent/%s", tb.Host, torrentId)
-	payload := map[string]string{"torrent_id": torrentId, "action": "Delete"}
-	jsonPayload, _ := json.Marshal(payload)
 
-	req, _ := http.NewRequest(http.MethodDelete, url, bytes.NewBuffer(jsonPayload))
-	if _, err := tb.client.MakeRequest(req); err != nil {
+	payload := map[string]string{"torrent_id": torrentId, "action": "delete"}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
 		return err
 	}
 
-	tb.logger.Info().Msgf("Torrent %s deleted from Torbox", torrentId)
+	req, _ := http.NewRequest(http.MethodDelete, url, bytes.NewBuffer(jsonPayload))
+	_, err = tb.client.MakeRequest(req)
+	if err != nil {
+		return err
+	}
+
+	tb.logger.Info().Str("torrent_id", torrentId).Msgf("torrent deleted from torbox")
 	return nil
 }
 

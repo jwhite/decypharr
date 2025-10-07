@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/rclone"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sirrobot01/decypharr/pkg/rclone"
 
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 
@@ -683,46 +684,52 @@ func (c *Cache) saveTorrent(id string, data []byte) {
 	}
 }
 
-func (c *Cache) ProcessTorrent(t *types.Torrent) error {
+func checkIsComplete(files map[string]types.File) bool {
+	_complete := len(files) > 0
 
-	isComplete := func(files map[string]types.File) bool {
-		_complete := len(files) > 0
-		for _, file := range files {
-			if file.Link == "" {
-				_complete = false
-				break
-			}
+	for _, file := range files {
+		if file.Link == "" {
+			_complete = false
+			break
 		}
-		return _complete
 	}
 
-	if !isComplete(t.Files) {
-		if err := c.client.UpdateTorrent(t); err != nil {
+	return _complete
+}
+
+func (c *Cache) ProcessTorrent(t *types.Torrent) error {
+	isComplete := checkIsComplete(t.Files)
+
+	if !isComplete {
+		err := c.client.UpdateTorrent(t)
+		if err != nil {
 			return fmt.Errorf("failed to update torrent: %w", err)
 		}
-	}
 
-	if !isComplete(t.Files) {
 		c.logger.Debug().
 			Str("torrent_id", t.Id).
 			Str("torrent_name", t.Name).
 			Int("total_files", len(t.Files)).
 			Msg("Torrent still not complete after refresh, marking as bad")
-	} else {
 
-		addedOn, err := time.Parse(time.RFC3339, t.Added)
-		if err != nil {
-			addedOn = time.Now()
-		}
-		ct := CachedTorrent{
-			Torrent:    t,
-			IsComplete: len(t.Files) > 0,
-			AddedOn:    addedOn,
-		}
-		c.setTorrent(ct, func(tor CachedTorrent) {
-			c.listingDebouncer.Call(false)
-		})
+		return nil
 	}
+
+	addedOn, err := time.Parse(time.RFC3339, t.Added)
+	if err != nil {
+		addedOn = time.Now()
+	}
+
+	ct := CachedTorrent{
+		Torrent:    t,
+		IsComplete: len(t.Files) > 0,
+		AddedOn:    addedOn,
+	}
+
+	c.setTorrent(ct, func(tor CachedTorrent) {
+		c.listingDebouncer.Call(false)
+	})
+
 	return nil
 }
 
@@ -733,18 +740,22 @@ func (c *Cache) Add(t *types.Torrent) error {
 			return fmt.Errorf("failed to update torrent: %w", err)
 		}
 	}
+
 	addedOn, err := time.Parse(time.RFC3339, t.Added)
 	if err != nil {
 		addedOn = time.Now()
 	}
+
 	ct := CachedTorrent{
 		Torrent:    t,
 		IsComplete: len(t.Files) > 0,
 		AddedOn:    addedOn,
 	}
+
 	c.setTorrent(ct, func(tor CachedTorrent) {
 		c.RefreshListings(true)
 	})
+
 	go c.GetFileDownloadLinks(ct)
 	return nil
 
@@ -762,6 +773,7 @@ func (c *Cache) DeleteTorrent(id string) error {
 		go c.RefreshListings(true)
 		return nil
 	}
+
 	return nil
 }
 
@@ -820,6 +832,7 @@ func (c *Cache) deleteTorrent(id string, removeFromDebrid bool) bool {
 		}
 		return true
 	}
+
 	return false
 }
 
