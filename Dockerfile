@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath \
-    -ldflags="-w -s -X github.com/sirrobot01/decypharr/pkg/version.Version=${VERSION} -X github.com/sirrobot01/decypharr/pkg/version.Channel=${CHANNEL}" \
+    -ldflags="-w -s -X github.com/dylanmazurek/decypharr/pkg/version.Version=${VERSION} -X github.com/dylanmazurek/decypharr/pkg/version.Channel=${CHANNEL}" \
     -o /decypharr
 
 # Build healthcheck (optimized)

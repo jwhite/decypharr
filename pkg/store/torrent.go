@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	debridTypes "github.com/sirrobot01/decypharr/pkg/debrid"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
@@ -50,9 +49,7 @@ func (s *Store) AddTorrent(ctx context.Context, importReq *ImportRequest) error 
 }
 
 func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, importReq *ImportRequest) {
-
 	if debridTorrent == nil {
-		// Early return if debridTorrent is nil
 		return
 	}
 
@@ -60,6 +57,7 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 	client := deb.Client()
 	downloadingStatuses := client.GetDownloadingStatus()
 	_arr := importReq.Arr
+
 	backoff := time.NewTimer(s.refreshInterval)
 	defer backoff.Stop()
 	for debridTorrent.Status != "downloaded" {
@@ -71,6 +69,7 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 				Str("torrent_name", debridTorrent.Name).
 				Err(err).
 				Msg("Error checking torrent status")
+
 			if dbT != nil && dbT.Id != "" {
 				// Delete the torrent if it was not downloaded
 				go func() {
@@ -78,10 +77,12 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 				}()
 			}
 			s.logger.Error().Msgf("Error checking status: %v", err)
-			s.markTorrentAsFailed(torrent)
+			s.markAsFailed(torrent)
+
 			go func() {
 				_arr.Refresh()
 			}()
+
 			importReq.markAsFailed(err, torrent, debridTorrent)
 			return
 		}
@@ -99,111 +100,133 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 		nextInterval := min(s.refreshInterval*2, 30*time.Second)
 		backoff.Reset(nextInterval)
 	}
-	var torrentSymlinkPath string
+
+	var torrentPath string
 	var err error
 	debridTorrent.Arr = _arr
 
-	// Check if debrid supports webdav by checking cache
 	timer := time.Now()
-
-	onFailed := func(err error) {
-		s.markTorrentAsFailed(torrent)
-		go func() {
-			if deleteErr := client.DeleteTorrent(debridTorrent.Id); deleteErr != nil {
-				s.logger.Warn().Err(deleteErr).Msgf("Failed to delete torrent %s", debridTorrent.Id)
-			}
-		}()
-		s.logger.Error().Err(err).Msgf("Error occured while processing torrent %s", debridTorrent.Name)
-		importReq.markAsFailed(err, torrent, debridTorrent)
-	}
-
-	onSuccess := func(torrentSymlinkPath string) {
-		torrent.TorrentPath = torrentSymlinkPath
-		s.updateTorrent(torrent, debridTorrent)
-		s.logger.Info().Msgf("Adding %s took %s", debridTorrent.Name, time.Since(timer))
-
-		go importReq.markAsCompleted(torrent, debridTorrent) // Mark the import request as completed, send callback if needed
-
-		go func() {
-			if err := request.SendDiscordMessage("download_complete", "success", torrent.discordContext()); err != nil {
-				s.logger.Error().Msgf("Error sending discord message: %v", err)
-			}
-		}()
-
-		go func() {
-			_arr.Refresh()
-		}()
-	}
 
 	switch importReq.Action {
 	case "symlink":
-		// Symlink action, we will create a symlink to the torrent
 		s.logger.Debug().Msgf("Post-Download Action: Symlink")
 		cache := deb.Cache()
 		if cache != nil {
 			s.logger.Info().Msgf("Using internal webdav for %s", debridTorrent.Debrid)
-			// Use webdav to download the file
-			if err := cache.Add(debridTorrent); err != nil {
-				onFailed(err)
+			err := cache.Add(debridTorrent)
+			if err != nil {
+				s.onFailed(err, torrent, debridTorrent, importReq)
 				return
 			}
 
-			rclonePath := filepath.Join(debridTorrent.MountPath, cache.GetTorrentFolder(debridTorrent)) // /mnt/remote/realdebrid/MyTVShow
+			rclonePath := filepath.Join(debridTorrent.MountPath, cache.GetTorrentFolder(debridTorrent))
 			torrentFolderNoExt := utils.RemoveExtension(debridTorrent.Name)
-			torrentSymlinkPath, err = s.createSymlinksWebdav(torrent, debridTorrent, rclonePath, torrentFolderNoExt) // /mnt/symlinks/{category}/MyTVShow/
+			torrentPath, err = s.createSymlinksWebdav(torrent, debridTorrent, rclonePath, torrentFolderNoExt)
+			if err != nil {
+				s.onFailed(err, torrent, debridTorrent, importReq)
+				return
+			}
 		} else {
-			// User is using either zurg or debrid webdav
-			torrentSymlinkPath, err = s.processSymlink(torrent, debridTorrent) // /mnt/symlinks/{category}/MyTVShow/
+			torrentPath, err = s.processSymlink(torrent, debridTorrent)
 		}
+
 		if err != nil {
-			onFailed(err)
+			s.onFailed(err, torrent, debridTorrent, importReq)
 			return
 		}
-		if torrentSymlinkPath == "" {
+
+		if torrentPath == "" {
 			err = fmt.Errorf("symlink path is empty for %s", debridTorrent.Name)
-			onFailed(err)
+			s.onFailed(err, torrent, debridTorrent, importReq)
 		}
-		onSuccess(torrentSymlinkPath)
+
+		torrent.TorrentPath = torrentPath
+
+		s.onSuccess(torrent, debridTorrent, importReq, timer)
 		return
 	case "download":
-		// Download action, we will download the torrent to the specified folder
-		// Generate download links
 		s.logger.Debug().Msgf("Post-Download Action: Download")
-		if err := client.GetFileDownloadLinks(debridTorrent); err != nil {
-			onFailed(err)
-			return
-		}
-
-		torrentSymlinkPath, err = s.processDownload(torrent, debridTorrent)
+		err := client.GetFileDownloadLinks(debridTorrent)
 		if err != nil {
-			onFailed(err)
+			s.onFailed(err, torrent, debridTorrent, importReq)
 			return
 		}
 
-		if torrentSymlinkPath == "" {
+		torrentPath, err = s.processDownload(torrent, debridTorrent)
+		if err != nil {
+			s.onFailed(err, torrent, debridTorrent, importReq)
+
+			return
+		}
+
+		if torrentPath == "" {
 			err = fmt.Errorf("download path is empty for %s", debridTorrent.Name)
-			onFailed(err)
+			s.onFailed(err, torrent, debridTorrent, importReq)
+
 			return
 		}
 
-		onSuccess(torrentSymlinkPath)
+		torrent.TorrentPath = torrentPath
+
+		s.onSuccess(torrent, debridTorrent, importReq, timer)
 	case "none":
 		s.logger.Debug().Msgf("Post-Download Action: None")
-		// No action, just update the torrent and mark it as completed
-		onSuccess(torrent.TorrentPath)
+		torrent.TorrentPath = torrentPath
+
+		s.onSuccess(torrent, debridTorrent, importReq, timer)
 	default:
 		// Action is none, do nothing, fallthrough
 	}
 }
 
-func (s *Store) markTorrentAsFailed(t *Torrent) *Torrent {
-	t.State = "error"
-	s.torrents.AddOrUpdate(t)
+func (s *Store) onSuccess(torrent *Torrent, debridTorrent *types.Torrent, importReq *ImportRequest, timer time.Time) {
+	s.updateTorrent(torrent, debridTorrent)
+	s.logger.Info().Msgf("Adding %s took %s", debridTorrent.Name, time.Since(timer))
+
+	go importReq.markAsCompleted(torrent, debridTorrent)
+
 	go func() {
-		if err := request.SendDiscordMessage("download_failed", "error", t.discordContext()); err != nil {
-			s.logger.Error().Msgf("Error sending discord message: %v", err)
+		importReq.Arr.Refresh()
+	}()
+
+	go func() {
+		deb := s.debrid.Debrid(debridTorrent.Debrid)
+		debridClient := deb.Client()
+		if debridClient == nil {
+			return
+		}
+
+		err := debridClient.DeleteTorrent(debridTorrent.Id)
+		if err != nil {
+			s.logger.Warn().Err(err).Msgf("failed to delete torrent %s", debridTorrent.Id)
 		}
 	}()
+}
+
+func (s *Store) onFailed(err error, torrent *Torrent, debridTorrent *types.Torrent, importReq *ImportRequest) {
+	s.markAsFailed(torrent)
+
+	go func() {
+		deb := s.debrid.Debrid(debridTorrent.Debrid)
+		debridClient := deb.Client()
+		if debridClient == nil {
+			return
+		}
+
+		err := debridClient.DeleteTorrent(debridTorrent.Id)
+		if err != nil {
+			s.logger.Warn().Err(err).Msgf("failed to delete torrent %s", debridTorrent.Id)
+		}
+	}()
+
+	s.logger.Error().Err(err).Msgf("error occured while processing torrent %s", debridTorrent.Name)
+	importReq.markAsFailed(err, torrent, debridTorrent)
+}
+
+func (s *Store) markAsFailed(t *Torrent) *Torrent {
+	t.State = "error"
+	s.torrents.AddOrUpdate(t)
+
 	return t
 }
 

@@ -61,11 +61,13 @@ func (s *Store) processDownload(torrent *Torrent, debridTorrent *types.Torrent) 
 	s.logger.Info().Msgf("Downloading %d files...", len(debridTorrent.Files))
 	torrentPath := filepath.Join(torrent.SavePath, utils.RemoveExtension(debridTorrent.OriginalFilename))
 	torrentPath = utils.RemoveInvalidChars(torrentPath)
+
 	err := os.MkdirAll(torrentPath, os.ModePerm)
 	if err != nil {
 		// add the previous error to the error and return
 		return "", fmt.Errorf("failed to create directory: %s: %v", torrentPath, err)
 	}
+
 	s.downloadFiles(torrent, debridTorrent, torrentPath)
 	return torrentPath, nil
 }
@@ -97,6 +99,7 @@ func (s *Store) downloadFiles(torrent *Torrent, debridTorrent *types.Torrent, pa
 		}
 		s.partialTorrentUpdate(torrent, debridTorrent)
 	}
+
 	client := &grab.Client{
 		UserAgent: "Decypharr[QBitTorrent]",
 		HTTPClient: &http.Client{
@@ -105,6 +108,7 @@ func (s *Store) downloadFiles(torrent *Torrent, debridTorrent *types.Torrent, pa
 			},
 		},
 	}
+
 	errChan := make(chan error, len(debridTorrent.Files))
 	for _, file := range debridTorrent.GetFiles() {
 		if file.DownloadLink == nil {
@@ -112,6 +116,7 @@ func (s *Store) downloadFiles(torrent *Torrent, debridTorrent *types.Torrent, pa
 			continue
 		}
 		wg.Add(1)
+
 		s.downloadSemaphore <- struct{}{}
 		go func(file types.File) {
 			defer wg.Done()
@@ -134,6 +139,7 @@ func (s *Store) downloadFiles(torrent *Torrent, debridTorrent *types.Torrent, pa
 			}
 		}(file)
 	}
+
 	wg.Wait()
 
 	close(errChan)
@@ -147,6 +153,7 @@ func (s *Store) downloadFiles(torrent *Torrent, debridTorrent *types.Torrent, pa
 		s.logger.Error().Msgf("Errors occurred during download: %v", errors)
 		return
 	}
+
 	s.logger.Info().Msgf("Downloaded all files for %s", debridTorrent.Name)
 }
 

@@ -1,11 +1,12 @@
 package qbit
 
 import (
-	"github.com/sirrobot01/decypharr/internal/request"
-	"github.com/sirrobot01/decypharr/pkg/arr"
 	"net/http"
 	"path/filepath"
 	"strings"
+
+	"github.com/sirrobot01/decypharr/internal/request"
+	"github.com/sirrobot01/decypharr/pkg/arr"
 )
 
 func (q *QBit) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +95,7 @@ func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
 	if strings.ToLower(r.FormValue("sequentialDownload")) == "true" {
 		action = "download"
 	}
+
 	debridName := r.FormValue("debrid")
 	category := r.FormValue("category")
 	_arr := getArrFromContext(ctx)
@@ -101,6 +103,7 @@ func (q *QBit) handleTorrentsAdd(w http.ResponseWriter, r *http.Request) {
 		// Arr is not in context
 		_arr = arr.New(category, "", "", false, false, nil, "", "")
 	}
+
 	atleastOne := false
 
 	// Handle magnet URLs
