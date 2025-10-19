@@ -18,7 +18,6 @@ import (
 func (s *Store) AddTorrent(ctx context.Context, importReq *ImportRequest) error {
 	torrent := createTorrentFromMagnet(importReq)
 	debridTorrent, err := debridTypes.Process(ctx, s.debrid, importReq.SelectedDebrid, importReq.Magnet, importReq.Arr, importReq.Action, importReq.DownloadUncached)
-
 	if err != nil {
 		var httpErr *utils.HTTPError
 		if ok := errors.As(err, &httpErr); ok {
@@ -91,12 +90,11 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 		if debridTorrent.Status == "downloaded" || !utils.Contains(downloadingStatuses, debridTorrent.Status) {
 			break
 		}
-		select {
-		case <-backoff.C:
-			// Increase interval gradually, cap at max
-			nextInterval := min(s.refreshInterval*2, 30*time.Second)
-			backoff.Reset(nextInterval)
-		}
+
+		<-backoff.C
+		// Reset the backoff timer
+		nextInterval := min(s.refreshInterval*2, 30*time.Second)
+		backoff.Reset(nextInterval)
 	}
 	var torrentSymlinkPath, torrentRclonePath string
 	debridTorrent.Arr = _arr
@@ -113,7 +111,6 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 		}()
 		s.logger.Error().Err(err).Msgf("Error occured while processing torrent %s", debridTorrent.Name)
 		importReq.markAsFailed(err, torrent, debridTorrent)
-		return
 	}
 
 	onSuccess := func(torrentSymlinkPath string) {
@@ -133,11 +130,16 @@ func (s *Store) processFiles(torrent *Torrent, debridTorrent *types.Torrent, imp
 	}
 
 	// Check for multi-season torrent support
-	isMultiSeason, seasons, err := s.detectMultiSeason(debridTorrent)
-	if err != nil {
-		s.logger.Warn().Msgf("Error detecting multi-season for %s: %v", debridTorrent.Name, err)
-		// Continue with normal processing if detection fails
-		isMultiSeason = false
+	var isMultiSeason bool
+	var seasons []SeasonInfo
+	var err error
+	if !importReq.SkipMultiSeason {
+		isMultiSeason, seasons, err = s.detectMultiSeason(debridTorrent)
+		if err != nil {
+			s.logger.Warn().Msgf("Error detecting multi-season for %s: %v", debridTorrent.Name, err)
+			// Continue with normal processing if detection fails
+			isMultiSeason = false
+		}
 	}
 
 	switch importReq.Action {
