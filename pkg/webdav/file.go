@@ -1,36 +1,20 @@
 package webdav
 
 import (
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/sirrobot01/decypharr/pkg/debrid/store"
+	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 )
 
-var streamingTransport = &http.Transport{
-	TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
-	MaxIdleConns:          200,
-	MaxIdleConnsPerHost:   100,
-	MaxConnsPerHost:       200,
-	IdleConnTimeout:       90 * time.Second,
-	TLSHandshakeTimeout:   10 * time.Second,
-	ResponseHeaderTimeout: 60 * time.Second, // give the upstream a minute to send headers
-	ExpectContinueTimeout: 1 * time.Second,
-	DisableKeepAlives:     true,  // close after each request
-	ForceAttemptHTTP2:     false, // don’t speak HTTP/2
-	// this line is what truly blocks HTTP/2:
-	TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
-}
-
-var sharedClient = &http.Client{
-	Transport: streamingTransport,
-	Timeout:   0,
-}
+const (
+	MaxNetworkRetries = 3
+	MaxLinkRetries    = 10
+)
 
 type streamError struct {
 	Err                   error
@@ -50,7 +34,6 @@ type File struct {
 	name         string
 	torrentName  string
 	link         string
-	downloadLink string
 	size         int64
 	isDir        bool
 	fileId       string
@@ -76,26 +59,21 @@ func (f *File) Close() error {
 	// This is just to satisfy the os.File interface
 	f.content = nil
 	f.children = nil
-	f.downloadLink = ""
 	f.readOffset = 0
 	return nil
 }
 
-func (f *File) getDownloadLink() (string, error) {
+func (f *File) getDownloadLink() (types.DownloadLink, error) {
 	// Check if we already have a final URL cached
-
-	if f.downloadLink != "" && isValidURL(f.downloadLink) {
-		return f.downloadLink, nil
-	}
 	downloadLink, err := f.cache.GetDownloadLink(f.torrentName, f.name, f.link)
 	if err != nil {
-		return "", err
+		return downloadLink, err
 	}
-	if downloadLink != "" && isValidURL(downloadLink) {
-		f.downloadLink = downloadLink
-		return downloadLink, nil
+	err = downloadLink.Valid()
+	if err != nil {
+		return types.DownloadLink{}, err
 	}
-	return "", os.ErrNotExist
+	return downloadLink, nil
 }
 
 func (f *File) getDownloadByteRange() (*[2]int64, error) {
@@ -106,7 +84,6 @@ func (f *File) getDownloadByteRange() (*[2]int64, error) {
 	return byteRange, nil
 }
 
-// setVideoStreamingHeaders sets the necessary headers for video streaming
 // It returns error and a boolean indicating if the request is a range request
 func (f *File) servePreloadedContent(w http.ResponseWriter, r *http.Request) error {
 	content := f.content
@@ -140,82 +117,45 @@ func (f *File) servePreloadedContent(w http.ResponseWriter, r *http.Request) err
 }
 
 func (f *File) StreamResponse(w http.ResponseWriter, r *http.Request) error {
-	// Handle preloaded content files
 	if f.content != nil {
 		return f.servePreloadedContent(w, r)
 	}
+	_logger := f.cache.Logger()
 
-	// Try streaming with retry logic
-	return f.streamWithRetry(w, r, 0)
+	start, end := f.getRange(r)
+
+	resp, err := f.cache.Stream(r.Context(), start, end, f.getDownloadLink)
+	if err != nil {
+		_logger.Error().Err(err).Str("file", f.name).Msg("Failed to stream with initial link")
+		return &streamError{Err: err, StatusCode: http.StatusRequestedRangeNotSatisfiable}
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+	return f.handleSuccessfulResponse(w, resp, start, end)
 }
 
-func (f *File) streamWithRetry(w http.ResponseWriter, r *http.Request, retryCount int) error {
-	const maxRetries = 3
-	_log := f.cache.Logger()
-
-	// Get download link (with caching optimization)
-	downloadLink, err := f.getDownloadLink()
-	if err != nil {
-		return &streamError{Err: err, StatusCode: http.StatusPreconditionFailed}
-	}
-
-	if downloadLink == "" {
-		return &streamError{Err: fmt.Errorf("empty download link"), StatusCode: http.StatusNotFound}
-	}
-
-	// Create upstream request with streaming optimizations
-	upstreamReq, err := http.NewRequest("GET", downloadLink, nil)
-	if err != nil {
-		return &streamError{Err: err, StatusCode: http.StatusInternalServerError}
-	}
-
-	setVideoStreamingHeaders(upstreamReq)
-
-	// Handle range requests (critical for video seeking)
-	isRangeRequest := f.handleRangeRequest(upstreamReq, r, w)
-	if isRangeRequest == -1 {
-		return &streamError{Err: fmt.Errorf("invalid range"), StatusCode: http.StatusRequestedRangeNotSatisfiable}
-	}
-
-	resp, err := sharedClient.Do(upstreamReq)
-	if err != nil {
-		return &streamError{Err: err, StatusCode: http.StatusServiceUnavailable}
-	}
-	defer resp.Body.Close()
-
-	// Handle upstream errors with retry logic
-	shouldRetry, retryErr := f.handleUpstream(resp, retryCount, maxRetries)
-	if shouldRetry && retryCount < maxRetries {
-		// Retry with new download link
-		_log.Debug().
-			Int("retry_count", retryCount+1).
-			Str("file", f.name).
-			Msg("Retrying stream request")
-		return f.streamWithRetry(w, r, retryCount+1)
-	}
-	if retryErr != nil {
-		return retryErr
-	}
-
-	// Determine status code based on range request
+func (f *File) handleSuccessfulResponse(w http.ResponseWriter, resp *http.Response, start, end int64) error {
 	statusCode := http.StatusOK
-	if isRangeRequest == 1 {
+	if start > 0 || end > 0 {
 		statusCode = http.StatusPartialContent
 	}
 
-	// Set headers before streaming
+	// Copy relevant headers
 	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
 		w.Header().Set("Content-Length", contentLength)
 	}
 
-	if contentRange := resp.Header.Get("Content-Range"); contentRange != "" && isRangeRequest == 1 {
+	if contentRange := resp.Header.Get("Content-Range"); contentRange != "" && statusCode == http.StatusPartialContent {
 		w.Header().Set("Content-Range", contentRange)
 	}
 
-	if err := f.streamBuffer(w, resp.Body, statusCode); err != nil {
-		return err
+	// Copy other important headers
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
 	}
-	return nil
+
+	return f.streamBuffer(w, resp.Body, statusCode)
 }
 
 func (f *File) streamBuffer(w http.ResponseWriter, src io.Reader, statusCode int) error {
@@ -228,7 +168,7 @@ func (f *File) streamBuffer(w http.ResponseWriter, src io.Reader, statusCode int
 	if n, err := src.Read(smallBuf); n > 0 {
 		// Write status code just before first successful write
 		w.WriteHeader(statusCode)
-		
+
 		if _, werr := w.Write(smallBuf[:n]); werr != nil {
 			if isClientDisconnection(werr) {
 				return &streamError{Err: werr, StatusCode: 0, IsClientDisconnection: true}
@@ -266,114 +206,21 @@ func (f *File) streamBuffer(w http.ResponseWriter, src io.Reader, statusCode int
 	}
 }
 
-func (f *File) handleUpstream(resp *http.Response, retryCount, maxRetries int) (shouldRetry bool, err error) {
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
-		return false, nil
-	}
-
-	_log := f.cache.Logger()
-
-	// Clean up response body properly
-	cleanupResp := func(resp *http.Response) {
-		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-	}
-
-	switch resp.StatusCode {
-	case http.StatusServiceUnavailable:
-		// Read the body to check for specific error messages
-		body, readErr := io.ReadAll(resp.Body)
-		cleanupResp(resp)
-
-		if readErr != nil {
-			_log.Error().Err(readErr).Msg("Failed to read response body")
-			return false, &streamError{
-				Err:        fmt.Errorf("failed to read error response: %w", readErr),
-				StatusCode: http.StatusServiceUnavailable,
-			}
-		}
-
-		bodyStr := string(body)
-		if strings.Contains(bodyStr, "you have exceeded your traffic") {
-			_log.Debug().
-				Str("file", f.name).
-				Int("retry_count", retryCount).
-				Msg("Bandwidth exceeded. Marking link as invalid")
-
-			f.cache.MarkDownloadLinkAsInvalid(f.link, f.downloadLink, "bandwidth_exceeded")
-
-			// Retry with a different API key if available and we haven't exceeded retries
-			if retryCount < maxRetries {
-				return true, nil
-			}
-
-			return false, &streamError{
-				Err:        fmt.Errorf("bandwidth exceeded after %d retries", retryCount),
-				StatusCode: http.StatusServiceUnavailable,
-			}
-		}
-
-		return false, &streamError{
-			Err:        fmt.Errorf("service unavailable: %s", bodyStr),
-			StatusCode: http.StatusServiceUnavailable,
-		}
-
-	case http.StatusNotFound:
-		cleanupResp(resp)
-
-		_log.Debug().
-			Str("file", f.name).
-			Int("retry_count", retryCount).
-			Msg("Link not found (404). Marking link as invalid and regenerating")
-
-		f.cache.MarkDownloadLinkAsInvalid(f.link, f.downloadLink, "link_not_found")
-
-		// Try to regenerate download link if we haven't exceeded retries
-		if retryCount < maxRetries {
-			// Clear cached link to force regeneration
-			f.downloadLink = ""
-			return true, nil
-		}
-
-		return false, &streamError{
-			Err:        fmt.Errorf("file not found after %d retries", retryCount),
-			StatusCode: http.StatusNotFound,
-		}
-
-	default:
-		body, _ := io.ReadAll(resp.Body)
-		cleanupResp(resp)
-
-		_log.Error().
-			Int("status_code", resp.StatusCode).
-			Str("file", f.name).
-			Str("response_body", string(body)).
-			Msg("Unexpected upstream error")
-
-		return false, &streamError{
-			Err:        fmt.Errorf("upstream error %d: %s", resp.StatusCode, string(body)),
-			StatusCode: http.StatusBadGateway,
-		}
-	}
-}
-
-func (f *File) handleRangeRequest(upstreamReq *http.Request, r *http.Request, w http.ResponseWriter) int {
+func (f *File) getRange(r *http.Request) (int64, int64) {
 	rangeHeader := r.Header.Get("Range")
 	if rangeHeader == "" {
 		// For video files, apply byte range if exists
 		if byteRange, _ := f.getDownloadByteRange(); byteRange != nil {
-			upstreamReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", byteRange[0], byteRange[1]))
+			return byteRange[0], byteRange[1]
 		}
-		return 0 // No range request
+		return 0, 0
 	}
 
 	// Parse range request
 	ranges, err := parseRange(rangeHeader, f.size)
 	if err != nil || len(ranges) != 1 {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", f.size))
-		return -1 // Invalid range
+		// Invalid range, return full content
+		return 0, 0
 	}
 
 	// Apply byte range offset if exists
@@ -384,9 +231,7 @@ func (f *File) handleRangeRequest(upstreamReq *http.Request, r *http.Request, w 
 		start += byteRange[0]
 		end += byteRange[0]
 	}
-
-	upstreamReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-	return 1 // Valid range request
+	return start, end
 }
 
 /*

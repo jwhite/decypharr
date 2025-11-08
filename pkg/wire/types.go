@@ -1,4 +1,4 @@
-package store
+package wire
 
 import (
 	"fmt"
@@ -70,6 +70,60 @@ type Torrent struct {
 	Source            string  `json:"source,omitempty"`
 
 	sync.Mutex
+}
+
+func (t *Torrent) Copy() *Torrent {
+	return &Torrent{
+		ID:                t.ID,
+		DebridID:          t.DebridID,
+		Debrid:            t.Debrid,
+		TorrentPath:       t.TorrentPath,
+		AddedOn:           t.AddedOn,
+		AmountLeft:        t.AmountLeft,
+		AutoTmm:           t.AutoTmm,
+		Availability:      t.Availability,
+		Category:          t.Category,
+		Completed:         t.Completed,
+		CompletionOn:      t.CompletionOn,
+		ContentPath:       t.ContentPath,
+		DlLimit:           t.DlLimit,
+		Dlspeed:           t.Dlspeed,
+		Downloaded:        t.Downloaded,
+		DownloadedSession: t.DownloadedSession,
+		Eta:               t.Eta,
+		FlPiecePrio:       t.FlPiecePrio,
+		ForceStart:        t.ForceStart,
+		Hash:              t.Hash,
+		LastActivity:      t.LastActivity,
+		MagnetUri:         t.MagnetUri,
+		MaxRatio:          t.MaxRatio,
+		MaxSeedingTime:    t.MaxSeedingTime,
+		Name:              t.Name,
+		NumComplete:       t.NumComplete,
+		NumIncomplete:     t.NumIncomplete,
+		NumLeechs:         t.NumLeechs,
+		NumSeeds:          t.NumSeeds,
+		Priority:          t.Priority,
+		Progress:          t.Progress,
+		Ratio:             t.Ratio,
+		RatioLimit:        t.RatioLimit,
+		SavePath:          t.SavePath,
+		SeedingTimeLimit:  t.SeedingTimeLimit,
+		SeenComplete:      t.SeenComplete,
+		SeqDl:             t.SeqDl,
+		Size:              t.Size,
+		State:             t.State,
+		SuperSeeding:      t.SuperSeeding,
+		Tags:              t.Tags,
+		TimeActive:        t.TimeActive,
+		TotalSize:         t.TotalSize,
+		Tracker:           t.Tracker,
+		UpLimit:           t.UpLimit,
+		Uploaded:          t.Uploaded,
+		UploadedSession:   t.UploadedSession,
+		Upspeed:           t.Upspeed,
+		Source:            t.Source,
+	}
 }
 
 func (t *Torrent) IsReady() bool {

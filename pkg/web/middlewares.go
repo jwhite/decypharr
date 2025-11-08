@@ -3,24 +3,25 @@ package web
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sirrobot01/decypharr/internal/config"
 	"net/http"
 	"strings"
+
+	"github.com/sirrobot01/decypharr/internal/config"
 )
 
 func (wb *Web) setupMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := config.Get()
-		needsAuth := cfg.NeedsSetup()
-		if needsAuth != nil && r.URL.Path != "/config" && r.URL.Path != "/api/config" {
-			http.Redirect(w, r, fmt.Sprintf("/config?inco=%s", needsAuth.Error()), http.StatusSeeOther)
+		needsSetup := cfg.CheckSetup()
+		if needsSetup != nil && r.URL.Path != "/settings" && r.URL.Path != "/api/config" {
+			http.Redirect(w, r, fmt.Sprintf("/settings?inco=%s", needsSetup.Error()), http.StatusSeeOther)
 			return
 		}
 
 		// strip inco from URL
-		if inco := r.URL.Query().Get("inco"); inco != "" && needsAuth == nil && r.URL.Path == "/config" {
+		if inco := r.URL.Query().Get("inco"); inco != "" && needsSetup == nil && r.URL.Path == "/settings" {
 			// redirect to the same URL without the inco parameter
-			http.Redirect(w, r, "/config", http.StatusSeeOther)
+			http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -78,8 +79,11 @@ func (wb *Web) isAPIRequest(r *http.Request) bool {
 func (wb *Web) sendJSONError(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"error":   message,
-		"status":  statusCode,
+	err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":  message,
+		"status": statusCode,
 	})
+	if err != nil {
+		return
+	}
 }

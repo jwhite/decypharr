@@ -4,19 +4,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/sirrobot01/decypharr/internal/config"
 )
 
 // Mount creates a mount using the rclone RC API with retry logic
-func (m *Manager) Mount(provider, webdavURL string) error {
-	return m.mountWithRetry(provider, webdavURL, 3)
+func (m *Manager) Mount(mountPath, provider, webdavURL string) error {
+	return m.mountWithRetry(mountPath, provider, webdavURL, 3)
 }
 
 // mountWithRetry attempts to mount with retry logic
-func (m *Manager) mountWithRetry(provider, webdavURL string, maxRetries int) error {
+func (m *Manager) mountWithRetry(mountPath, provider, webdavURL string, maxRetries int) error {
 	if !m.IsReady() {
 		if err := m.WaitForReady(30 * time.Second); err != nil {
 			return fmt.Errorf("rclone RC server not ready: %w", err)
@@ -34,7 +35,7 @@ func (m *Manager) mountWithRetry(provider, webdavURL string, maxRetries int) err
 			time.Sleep(wait)
 		}
 
-		if err := m.performMount(provider, webdavURL); err != nil {
+		if err := m.performMount(mountPath, provider, webdavURL); err != nil {
 			m.logger.Error().
 				Err(err).
 				Str("provider", provider).
@@ -49,13 +50,17 @@ func (m *Manager) mountWithRetry(provider, webdavURL string, maxRetries int) err
 }
 
 // performMount performs a single mount attempt
-func (m *Manager) performMount(provider, webdavURL string) error {
+func (m *Manager) performMount(mountPath, provider, webdavURL string) error {
 	cfg := config.Get()
-	mountPath := filepath.Join(cfg.Rclone.MountPath, provider)
 
-	// Create mount directory
-	if err := os.MkdirAll(mountPath, 0755); err != nil {
-		return fmt.Errorf("failed to create mount directory %s: %w", mountPath, err)
+	// Create mount directory(except on Windows, cos winFSP handles it)
+	if runtime.GOOS != "windows" {
+		if err := os.MkdirAll(mountPath, 0755); err != nil {
+			return fmt.Errorf("failed to create mount directory %s: %w", mountPath, err)
+		}
+	} else {
+		// In fact, delete the mount if it exists, to avoid issues
+		_ = os.Remove(mountPath) // Ignore error
 	}
 
 	// Check if already mounted
@@ -94,10 +99,26 @@ func (m *Manager) performMount(provider, webdavURL string) error {
 		"VolumeName":    fmt.Sprintf("decypharr-%s", provider),
 	}
 
+	if cfg.Rclone.AsyncRead != nil {
+		mountOpt["AsyncRead"] = *cfg.Rclone.AsyncRead
+	}
+
+	if cfg.Rclone.UseMmap {
+		mountOpt["UseMmap"] = cfg.Rclone.UseMmap
+	}
+
+	if cfg.Rclone.Transfers != 0 {
+		mountOpt["Transfers"] = cfg.Rclone.Transfers
+	}
+
 	configOpts := make(map[string]interface{})
 
 	if cfg.Rclone.BufferSize != "" {
 		configOpts["BufferSize"] = cfg.Rclone.BufferSize
+	}
+
+	if cfg.Rclone.BwLimit != "" {
+		configOpts["BwLimit"] = cfg.Rclone.BwLimit
 	}
 
 	if len(configOpts) > 0 {
@@ -105,7 +126,8 @@ func (m *Manager) performMount(provider, webdavURL string) error {
 		mountArgs["_config"] = configOpts
 	}
 	vfsOpt := map[string]interface{}{
-		"CacheMode": cfg.Rclone.VfsCacheMode,
+		"CacheMode":    cfg.Rclone.VfsCacheMode,
+		"DirCacheTime": cfg.Rclone.DirCacheTime,
 	}
 	vfsOpt["PollInterval"] = 0 // Poll interval not supported for webdav, set to 0
 
@@ -115,6 +137,13 @@ func (m *Manager) performMount(provider, webdavURL string) error {
 		if cfg.Rclone.VfsCacheMaxAge != "" {
 			vfsOpt["CacheMaxAge"] = cfg.Rclone.VfsCacheMaxAge
 		}
+		if cfg.Rclone.VfsDiskSpaceTotal != "" {
+			vfsOpt["DiskSpaceTotalSize"] = cfg.Rclone.VfsDiskSpaceTotal
+		}
+		if cfg.Rclone.VfsReadChunkSizeLimit != "" {
+			vfsOpt["ChunkSizeLimit"] = cfg.Rclone.VfsReadChunkSizeLimit
+		}
+
 		if cfg.Rclone.VfsCacheMaxSize != "" {
 			vfsOpt["CacheMaxSize"] = cfg.Rclone.VfsCacheMaxSize
 		}
@@ -127,6 +156,19 @@ func (m *Manager) performMount(provider, webdavURL string) error {
 		if cfg.Rclone.VfsReadAhead != "" {
 			vfsOpt["ReadAhead"] = cfg.Rclone.VfsReadAhead
 		}
+
+		if cfg.Rclone.VfsCacheMinFreeSpace != "" {
+			vfsOpt["CacheMinFreeSpace"] = cfg.Rclone.VfsCacheMinFreeSpace
+		}
+
+		if cfg.Rclone.VfsFastFingerprint {
+			vfsOpt["FastFingerprint"] = cfg.Rclone.VfsFastFingerprint
+		}
+
+		if cfg.Rclone.VfsReadChunkStreams != 0 {
+			vfsOpt["ChunkStreams"] = cfg.Rclone.VfsReadChunkStreams
+		}
+
 		if cfg.Rclone.NoChecksum {
 			vfsOpt["NoChecksum"] = cfg.Rclone.NoChecksum
 		}
@@ -137,11 +179,19 @@ func (m *Manager) performMount(provider, webdavURL string) error {
 
 	// Add mount options based on configuration
 	if cfg.Rclone.UID != 0 {
-		mountOpt["UID"] = cfg.Rclone.UID
+		vfsOpt["UID"] = cfg.Rclone.UID
 	}
 	if cfg.Rclone.GID != 0 {
-		mountOpt["GID"] = cfg.Rclone.GID
+		vfsOpt["GID"] = cfg.Rclone.GID
 	}
+
+	if cfg.Rclone.Umask != "" {
+		umask, err := strconv.ParseInt(cfg.Rclone.Umask, 8, 32)
+		if err == nil {
+			vfsOpt["Umask"] = uint32(umask)
+		}
+	}
+
 	if cfg.Rclone.AttrTimeout != "" {
 		if attrTimeout, err := time.ParseDuration(cfg.Rclone.AttrTimeout); err == nil {
 			mountOpt["AttrTimeout"] = attrTimeout.String()
@@ -159,7 +209,7 @@ func (m *Manager) performMount(provider, webdavURL string) error {
 	_, err := m.makeRequest(req, true)
 	if err != nil {
 		// Clean up mount point on failure
-		m.forceUnmountPath(mountPath)
+		_ = m.forceUnmountPath(mountPath)
 		return fmt.Errorf("failed to create mount for %s: %w", provider, err)
 	}
 

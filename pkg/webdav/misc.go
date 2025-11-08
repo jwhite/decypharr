@@ -2,21 +2,15 @@ package webdav
 
 import (
 	"fmt"
-	"github.com/stanNthe5/stringbuf"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"strconv"
 	"strings"
 	"time"
-)
 
-func isValidURL(str string) bool {
-	u, err := url.Parse(str)
-	// A valid URL should parse without error, and have a non-empty scheme and host.
-	return err == nil && u.Scheme != "" && u.Host != ""
-}
+	"github.com/stanNthe5/stringbuf"
+)
 
 var pctHex = "0123456789ABCDEF"
 
@@ -134,14 +128,6 @@ func writeXml(w http.ResponseWriter, status int, buf stringbuf.StringBuf) {
 	_, _ = w.Write(buf.Bytes())
 }
 
-func hasHeadersWritten(w http.ResponseWriter) bool {
-	// Most ResponseWriter implementations support this
-	if hw, ok := w.(interface{ Written() bool }); ok {
-		return hw.Written()
-	}
-	return false
-}
-
 func isClientDisconnection(err error) bool {
 	if err == nil {
 		return false
@@ -217,13 +203,4 @@ func parseRange(s string, size int64) ([]httpRange, error) {
 		ranges = append(ranges, r)
 	}
 	return ranges, nil
-}
-
-func setVideoStreamingHeaders(req *http.Request) {
-	// Request optimizations for faster response
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("User-Agent", "VideoStream/1.0")
-	req.Header.Set("Priority", "u=1")
 }

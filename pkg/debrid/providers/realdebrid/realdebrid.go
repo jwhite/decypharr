@@ -2,7 +2,6 @@ package realdebrid
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sirrobot01/decypharr/pkg/debrid/account"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"go.uber.org/ratelimit"
 
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
@@ -29,12 +30,11 @@ type RealDebrid struct {
 	name string
 	Host string `json:"host"`
 
-	APIKey   string
-	accounts *types.Accounts
+	APIKey          string
+	accountsManager *account.Manager
 
 	DownloadUncached      bool
 	client                *request.Client
-	downloadClient        *request.Client
 	repairClient          *request.Client
 	autoExpiresLinksAfter time.Duration
 
@@ -50,10 +50,7 @@ type RealDebrid struct {
 	limit           int
 }
 
-func New(dc config.Debrid) (*RealDebrid, error) {
-	rl := request.ParseRateLimit(dc.RateLimit)
-	repairRl := request.ParseRateLimit(cmp.Or(dc.RepairRateLimit, dc.RateLimit))
-	downloadRl := request.ParseRateLimit(cmp.Or(dc.DownloadRateLimit, dc.RateLimit))
+func New(dc config.Debrid, ratelimits map[string]ratelimit.Limiter) (*RealDebrid, error) {
 
 	headers := map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", dc.APIKey),
@@ -69,27 +66,20 @@ func New(dc config.Debrid) (*RealDebrid, error) {
 		name:                  "realdebrid",
 		Host:                  "https://api.real-debrid.com/rest/1.0",
 		APIKey:                dc.APIKey,
-		accounts:              types.NewAccounts(dc),
+		accountsManager:       account.NewManager(dc, ratelimits["download"], _log),
 		DownloadUncached:      dc.DownloadUncached,
 		autoExpiresLinksAfter: autoExpiresLinksAfter,
 		UnpackRar:             dc.UnpackRar,
 		client: request.New(
 			request.WithHeaders(headers),
-			request.WithRateLimiter(rl),
+			request.WithRateLimiter(ratelimits["main"]),
 			request.WithLogger(_log),
 			request.WithMaxRetries(10),
 			request.WithRetryableStatus(429, 502),
 			request.WithProxy(dc.Proxy),
 		),
-		downloadClient: request.New(
-			request.WithRateLimiter(downloadRl),
-			request.WithLogger(_log),
-			request.WithMaxRetries(10),
-			request.WithRetryableStatus(429, 447, 502),
-			request.WithProxy(dc.Proxy),
-		),
 		repairClient: request.New(
-			request.WithRateLimiter(repairRl),
+			request.WithRateLimiter(ratelimits["repair"]),
 			request.WithHeaders(headers),
 			request.WithLogger(_log),
 			request.WithMaxRetries(4),
@@ -360,26 +350,18 @@ func (r *RealDebrid) addTorrent(t *types.Torrent) (*types.Torrent, error) {
 		if resp.StatusCode == 509 {
 			return nil, utils.TooManyActiveDownloadsError
 		}
-
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body: %s", resp.StatusCode, string(bodyBytes))
 	}
-
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-
-	if err = json.Unmarshal(bodyBytes, &data); err != nil {
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
 
 	t.Id = data.Id
 	t.Debrid = r.name
 	t.MountPath = r.MountPath
-
+	t.Added = time.Now().Format(time.RFC3339)
 	return t, nil
 }
 
@@ -394,6 +376,7 @@ func (r *RealDebrid) addMagnet(t *types.Torrent) (*types.Torrent, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		// Handle multiple_downloads
 
@@ -401,20 +384,16 @@ func (r *RealDebrid) addMagnet(t *types.Torrent) (*types.Torrent, error) {
 			return nil, utils.TooManyActiveDownloadsError
 		}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body: %s", resp.StatusCode, string(bodyBytes))
 	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-	if err = json.Unmarshal(bodyBytes, &data); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
 	t.Id = data.Id
 	t.Debrid = r.name
 	t.MountPath = r.MountPath
+	t.Added = time.Now().Format(time.RFC3339)
 	return t, nil
 }
 
@@ -426,22 +405,16 @@ func (r *RealDebrid) GetTorrent(torrentId string) (*types.Torrent, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		if resp.StatusCode == http.StatusNotFound {
 			return nil, utils.TorrentNotFoundError
 		}
-		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("realdebrid API error: Status: %d || Body %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var data torrentInfo
-	err = json.Unmarshal(bodyBytes, &data)
-	if err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
 	}
 
@@ -474,19 +447,15 @@ func (r *RealDebrid) UpdateTorrent(t *types.Torrent) error {
 		return err
 	}
 	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading response body: %w", err)
-	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusNotFound {
 			return utils.TorrentNotFoundError
 		}
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("realdebrid API error: Status: %d || Body: %s", resp.StatusCode, string(bodyBytes))
 	}
 	var data torrentInfo
-	err = json.Unmarshal(bodyBytes, &data)
-	if err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return err
 	}
 	t.Name = data.Filename
@@ -501,7 +470,6 @@ func (r *RealDebrid) UpdateTorrent(t *types.Torrent) error {
 	t.Links = data.Links
 	t.MountPath = r.MountPath
 	t.Debrid = r.name
-	t.Added = data.Added
 	t.Files, _ = r.getSelectedFiles(t, data) // Get selected files
 
 	return nil
@@ -533,6 +501,7 @@ func (r *RealDebrid) CheckStatus(t *types.Torrent) (*types.Torrent, error) {
 		t.Status = status
 		t.Debrid = r.name
 		t.MountPath = r.MountPath
+		t.Added = data.Added
 		if status == "waiting_files_selection" {
 			t.Files = r.getTorrentFiles(t, data)
 			if len(t.Files) == 0 {
@@ -594,7 +563,7 @@ func (r *RealDebrid) GetFileDownloadLinks(t *types.Torrent) error {
 	var firstErr error
 
 	files := make(map[string]types.File)
-	links := make(map[string]*types.DownloadLink)
+	links := make(map[string]types.DownloadLink)
 
 	_files := t.GetFiles()
 	wg.Add(len(_files))
@@ -612,7 +581,7 @@ func (r *RealDebrid) GetFileDownloadLinks(t *types.Torrent) error {
 				mu.Unlock()
 				return
 			}
-			if link == nil {
+			if link.Empty() {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = fmt.Errorf("realdebrid API error: download link not found for file %s", file.Name)
@@ -622,7 +591,6 @@ func (r *RealDebrid) GetFileDownloadLinks(t *types.Torrent) error {
 			}
 
 			file.DownloadLink = link
-
 			mu.Lock()
 			files[file.Name] = file
 			links[link.Link] = link
@@ -637,7 +605,6 @@ func (r *RealDebrid) GetFileDownloadLinks(t *types.Torrent) error {
 	}
 
 	// Add links to cache
-	r.accounts.SetDownloadLinks(links)
 	t.Files = files
 	return nil
 }
@@ -658,8 +625,9 @@ func (r *RealDebrid) CheckLink(link string) error {
 	return nil
 }
 
-func (r *RealDebrid) _getDownloadLink(file *types.File) (*types.DownloadLink, error) {
+func (r *RealDebrid) getDownloadLink(account *account.Account, file *types.File) (types.DownloadLink, error) {
 	url := fmt.Sprintf("%s/unrestrict/link/", r.Host)
+	emptyLink := types.DownloadLink{}
 	_link := file.Link
 	if strings.HasPrefix(file.Link, "https://real-debrid.com/d/") && len(file.Link) > 39 {
 		_link = file.Link[0:39]
@@ -668,71 +636,58 @@ func (r *RealDebrid) _getDownloadLink(file *types.File) (*types.DownloadLink, er
 		"link": {_link},
 	}
 	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(payload.Encode()))
-	resp, err := r.downloadClient.Do(req)
+	resp, err := account.Client().Do(req)
 
 	if err != nil {
-		return nil, err
+		return emptyLink, err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		// Read the response body to get the error message
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
 		var data ErrorResponse
-		if err = json.Unmarshal(b, &data); err != nil {
-			return nil, fmt.Errorf("error unmarshalling %d || %s \n %s", resp.StatusCode, err, string(b))
+		if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return emptyLink, fmt.Errorf("error unmarshalling %d || %s", resp.StatusCode, err)
 		}
 		switch data.ErrorCode {
-		case 19:
-			return nil, utils.HosterUnavailableError // File has been removed
-		case 23:
-			return nil, utils.TrafficExceededError
-		case 24:
-			return nil, utils.HosterUnavailableError // Link has been nerfed
-		case 34:
-			return nil, utils.TrafficExceededError // traffic exceeded
-		case 35:
-			return nil, utils.HosterUnavailableError
-		case 36:
-			return nil, utils.TrafficExceededError // traffic exceeded
+		case 19, 24, 35:
+			return emptyLink, utils.HosterUnavailableError // File has been removed
+		case 23, 34, 36:
+			return emptyLink, utils.TrafficExceededError
 		default:
-			return nil, fmt.Errorf("realdebrid API error: Status: %d || Code: %d", resp.StatusCode, data.ErrorCode)
+			return emptyLink, fmt.Errorf("realdebrid API error: Status: %d || Code: %d", resp.StatusCode, data.ErrorCode)
 		}
 	}
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
 	var data UnrestrictResponse
-	if err = json.Unmarshal(b, &data); err != nil {
-		return nil, fmt.Errorf("realdebrid API error: Error unmarshalling response: %w", err)
+	if err = json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return emptyLink, fmt.Errorf("realdebrid API error: Error unmarshalling response: %w", err)
 	}
 
 	if data.Download == "" {
-		return nil, fmt.Errorf("realdebrid API error: download link not found")
+		return emptyLink, fmt.Errorf("realdebrid API error: download link not found")
 	}
 
 	now := time.Now()
-	return &types.DownloadLink{
+	dl := types.DownloadLink{
+		Token:        account.Token,
 		Filename:     data.Filename,
 		Size:         data.Filesize,
 		Link:         data.Link,
 		DownloadLink: data.Download,
 		Generated:    now,
 		ExpiresAt:    now.Add(r.autoExpiresLinksAfter),
-	}, nil
+	}
+
+	// Store the link in the account
+	account.StoreDownloadLink(dl)
+	return dl, nil
 }
 
-func (r *RealDebrid) GetDownloadLink(t *types.Torrent, file *types.File) (*types.DownloadLink, error) {
-	accounts := r.accounts.Active()
-
-	for _, account := range accounts {
-		r.downloadClient.SetHeader("Authorization", fmt.Sprintf("Bearer %s", account.Token))
-		downloadLink, err := r._getDownloadLink(file)
-
+func (r *RealDebrid) GetDownloadLink(t *types.Torrent, file *types.File) (types.DownloadLink, error) {
+	accounts := r.accountsManager.Active()
+	for _, _account := range accounts {
+		downloadLink, err := r.getDownloadLink(_account, file)
 		if err == nil {
 			return downloadLink, nil
 		}
@@ -743,17 +698,17 @@ func (r *RealDebrid) GetDownloadLink(t *types.Torrent, file *types.File) (*types
 			retries = 5
 		} else {
 			// If the error is not traffic exceeded, return the error
-			return nil, err
+			return downloadLink, err
 		}
 
 		backOff := 1 * time.Second
 		for retries > 0 {
-			downloadLink, err = r._getDownloadLink(file)
+			downloadLink, err = r.getDownloadLink(_account, file)
 			if err == nil {
 				return downloadLink, nil
 			}
 			if !errors.Is(err, utils.TrafficExceededError) {
-				return nil, err
+				return downloadLink, err
 			}
 			// Add a delay before retrying
 			time.Sleep(backOff)
@@ -761,7 +716,7 @@ func (r *RealDebrid) GetDownloadLink(t *types.Torrent, file *types.File) (*types
 			retries--
 		}
 	}
-	return nil, fmt.Errorf("realdebrid API error: download link not found")
+	return types.DownloadLink{}, fmt.Errorf("realdebrid API error: used all active accounts")
 }
 
 func (r *RealDebrid) getTorrents(offset int, limit int) (int, []*types.Torrent, error) {
@@ -787,15 +742,10 @@ func (r *RealDebrid) getTorrents(offset int, limit int) (int, []*types.Torrent, 
 	}
 
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, torrents, err
-	}
-
 	totalItems, _ := strconv.Atoi(resp.Header.Get("X-Total-Count"))
 	var data []TorrentsResponse
-	if err = json.Unmarshal(body, &data); err != nil {
-		return 0, torrents, err
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return 0, nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	filenames := map[string]struct{}{}
@@ -861,51 +811,48 @@ func (r *RealDebrid) GetTorrents() ([]*types.Torrent, error) {
 	return allTorrents, nil
 }
 
-func (r *RealDebrid) GetDownloadLinks() (map[string]*types.DownloadLink, error) {
-	links := make(map[string]*types.DownloadLink)
-	offset := 0
-	limit := 1000
+func (r *RealDebrid) RefreshDownloadLinks() error {
+	accounts := r.accountsManager.All()
 
-	accounts := r.accounts.Active()
-
-	if len(accounts) < 1 {
-		// No active download keys. It's likely that the key has reached bandwidth limit
-		return links, fmt.Errorf("no active download keys")
-	}
-
-	activeAccount := accounts[0]
-	r.downloadClient.SetHeader("Authorization", fmt.Sprintf("Bearer %s", activeAccount.Token))
-	for {
-		dl, err := r._getDownloads(offset, limit)
-		if err != nil {
-			break
+	for _, _account := range accounts {
+		if _account == nil || _account.Token == "" {
+			continue
 		}
-		if len(dl) == 0 {
-			break
-		}
-
-		for _, d := range dl {
-			if _, exists := links[d.Link]; exists {
-				// This is ordered by date, so we can skip the rest
-				continue
+		offset := 0
+		limit := 1000
+		links := make(map[string]*types.DownloadLink)
+		for {
+			dl, err := r.getDownloadLinks(_account, offset, limit)
+			if err != nil {
+				break
 			}
-			links[d.Link] = &d
+			if len(dl) == 0 {
+				break
+			}
+
+			for _, d := range dl {
+				if _, exists := links[d.Link]; exists {
+					// This is ordered by date, so we can skip the rest
+					continue
+				}
+				links[d.Link] = &d
+			}
+
+			offset += len(dl)
 		}
-
-		offset += len(dl)
+		_account.StoreDownloadLinks(links)
 	}
-
-	return links, nil
+	return nil
 }
 
-func (r *RealDebrid) _getDownloads(offset int, limit int) ([]types.DownloadLink, error) {
+func (r *RealDebrid) getDownloadLinks(account *account.Account, offset int, limit int) ([]types.DownloadLink, error) {
 	url := fmt.Sprintf("%s/downloads?limit=%d", r.Host, limit)
 	if offset > 0 {
 		url = fmt.Sprintf("%s&offset=%d", url, offset)
 	}
 
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := r.downloadClient.MakeRequest(req)
+	resp, err := account.Client().MakeRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -918,6 +865,7 @@ func (r *RealDebrid) _getDownloads(offset int, limit int) ([]types.DownloadLink,
 	links := make([]types.DownloadLink, 0)
 	for _, d := range data {
 		links = append(links, types.DownloadLink{
+			Token:        account.Token,
 			Filename:     d.Filename,
 			Size:         d.Filesize,
 			Link:         d.Link,
@@ -941,16 +889,6 @@ func (r *RealDebrid) GetDownloadUncached() bool {
 
 func (r *RealDebrid) GetMountPath() string {
 	return r.MountPath
-}
-
-func (r *RealDebrid) DeleteDownloadLink(linkId string) error {
-	url := fmt.Sprintf("%s/downloads/delete/%s", r.Host, linkId)
-	req, _ := http.NewRequest(http.MethodDelete, url, nil)
-	if _, err := r.downloadClient.MakeRequest(req); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (r *RealDebrid) GetProfile() (*types.Profile, error) {
@@ -987,8 +925,7 @@ func (r *RealDebrid) GetProfile() (*types.Profile, error) {
 }
 
 func (r *RealDebrid) GetAvailableSlots() (int, error) {
-	url := fmt.Sprintf("%s/torrents/activeCount", r.Host)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/torrents/activeCount", r.Host), nil)
 	resp, err := r.client.MakeRequest(req)
 	if err != nil {
 		return 0, nil
@@ -1002,19 +939,18 @@ func (r *RealDebrid) GetAvailableSlots() (int, error) {
 	return data.TotalSlots - data.ActiveSlots - r.minimumFreeSlot, nil // Ensure we maintain minimum active pots
 }
 
-func (r *RealDebrid) Accounts() *types.Accounts {
-	return r.accounts
+func (r *RealDebrid) AccountManager() *account.Manager {
+	return r.accountsManager
 }
 
 func (r *RealDebrid) SyncAccounts() error {
 	// Sync accounts with the current configuration
-	if len(r.accounts.Active()) == 0 {
+	if len(r.accountsManager.Active()) == 0 {
 		return nil
 	}
-
-	for idx, account := range r.accounts.Active() {
-		if err := r.syncAccount(idx, account); err != nil {
-			r.logger.Error().Err(err).Msgf("Error syncing account %s", account.Username)
+	for _, _account := range r.accountsManager.All() {
+		if err := r.syncAccount(_account); err != nil {
+			r.logger.Error().Err(err).Msgf("Error syncing account %s", _account.Username)
 			continue // Skip this account and continue with the next
 		}
 	}
@@ -1022,18 +958,15 @@ func (r *RealDebrid) SyncAccounts() error {
 	return nil
 }
 
-func (r *RealDebrid) syncAccount(index int, account *types.Account) error {
+func (r *RealDebrid) syncAccount(account *account.Account) error {
 	if account.Token == "" {
 		return fmt.Errorf("account %s has no token", account.Username)
 	}
-	client := http.DefaultClient
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/user", r.Host), nil)
 	if err != nil {
 		return fmt.Errorf("error creating request for account %s: %w", account.Username, err)
 	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", account.Token))
-	resp, err := client.Do(req)
+	resp, err := account.Client().Do(req)
 	if err != nil {
 		return fmt.Errorf("error checking account %s: %w", account.Username, err)
 	}
@@ -1056,8 +989,7 @@ func (r *RealDebrid) syncAccount(index int, account *types.Account) error {
 	if err != nil {
 		return fmt.Errorf("error creating request for traffic details for account %s: %w", account.Username, err)
 	}
-	trafficReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", account.Token))
-	trafficResp, err := client.Do(trafficReq)
+	trafficResp, err := account.Client().Do(trafficReq)
 	if err != nil {
 		return fmt.Errorf("error checking traffic for account %s: %w", account.Username, err)
 	}
@@ -1070,14 +1002,31 @@ func (r *RealDebrid) syncAccount(index int, account *types.Account) error {
 	defer trafficResp.Body.Close()
 	var trafficData TrafficResponse
 	if err := json.NewDecoder(trafficResp.Body).Decode(&trafficData); err != nil {
-		return fmt.Errorf("error decoding traffic details for account %s: %w", account.Username, err)
+		// Skip logging traffic error
+		account.TrafficUsed.Store(0)
+	} else {
+		today := time.Now().Format(time.DateOnly)
+		if todayData, exists := trafficData[today]; exists {
+			account.TrafficUsed.Store(todayData.Bytes)
+		}
 	}
+	//r.accountsManager.Update(account)
+	return nil
+}
 
-	today := time.Now().Format(time.DateOnly)
-	if todayData, exists := trafficData[today]; exists {
-		account.TrafficUsed = todayData.Bytes
+func (r *RealDebrid) DeleteDownloadLink(account *account.Account, downloadLink types.DownloadLink) error {
+	url := fmt.Sprintf("%s/downloads/delete/%s", r.Host, downloadLink.Id)
+	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	resp, err := account.Client().Do(req)
+	if err != nil {
+		return err
 	}
-
-	r.accounts.Update(index, account)
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("realdebrid API error: %d", resp.StatusCode)
+	}
+	account.DeleteDownloadLink(downloadLink.Link)
 	return nil
 }

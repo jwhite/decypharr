@@ -42,6 +42,38 @@ type Torrent struct {
 	sync.Mutex
 }
 
+func (t *Torrent) Copy() *Torrent {
+	t.Lock()
+	defer t.Unlock()
+
+	newFiles := make(map[string]File, len(t.Files))
+	for k, v := range t.Files {
+		newFiles[k] = v
+	}
+
+	return &Torrent{
+		Id:               t.Id,
+		InfoHash:         t.InfoHash,
+		Name:             t.Name,
+		Folder:           t.Folder,
+		Filename:         t.Filename,
+		OriginalFilename: t.OriginalFilename,
+		Size:             t.Size,
+		Bytes:            t.Bytes,
+		Magnet:           t.Magnet,
+		Files:            newFiles,
+		Status:           t.Status,
+		Added:            t.Added,
+		Progress:         t.Progress,
+		Speed:            t.Speed,
+		Seeders:          t.Seeders,
+		Links:            append([]string{}, t.Links...),
+		MountPath:        t.MountPath,
+		Debrid:           t.Debrid,
+		Arr:              t.Arr,
+	}
+}
+
 func (t *Torrent) GetSymlinkFolder(parent string) string {
 	return filepath.Join(parent, t.Arr.Name, t.Folder)
 }
@@ -85,18 +117,18 @@ func (t *Torrent) GetFiles() []File {
 }
 
 type File struct {
-	TorrentId    string        `json:"torrent_id"`
-	Id           string        `json:"id"`
-	Name         string        `json:"name"`
-	Size         int64         `json:"size"`
-	IsRar        bool          `json:"is_rar"`
-	ByteRange    *[2]int64     `json:"byte_range,omitempty"`
-	Path         string        `json:"path"`
-	Link         string        `json:"link"`
-	AccountId    string        `json:"account_id"`
-	Generated    time.Time     `json:"generated"`
-	Deleted      bool          `json:"deleted"`
-	DownloadLink *DownloadLink `json:"-"`
+	TorrentId    string       `json:"torrent_id"`
+	Id           string       `json:"id"`
+	Name         string       `json:"name"`
+	Size         int64        `json:"size"`
+	IsRar        bool         `json:"is_rar"`
+	ByteRange    *[2]int64    `json:"byte_range,omitempty"`
+	Path         string       `json:"path"`
+	Link         string       `json:"link"`
+	AccountId    string       `json:"account_id"`
+	Generated    time.Time    `json:"generated"`
+	Deleted      bool         `json:"deleted"`
+	DownloadLink DownloadLink `json:"-"`
 }
 
 func (t *Torrent) Cleanup(remove bool) {
@@ -139,6 +171,8 @@ type Profile struct {
 }
 
 type DownloadLink struct {
+	Debrid       string    `json:"debrid"`
+	Token        string    `json:"token"`
 	Filename     string    `json:"filename"`
 	Link         string    `json:"link"`
 	DownloadLink string    `json:"download_link"`
@@ -148,6 +182,17 @@ type DownloadLink struct {
 	ExpiresAt    time.Time
 }
 
-func (d *DownloadLink) String() string {
-	return d.DownloadLink
+func (dl *DownloadLink) Valid() error {
+	if dl.Empty() {
+		return EmptyDownloadLinkError
+	}
+	return nil
+}
+
+func (dl *DownloadLink) Empty() bool {
+	return dl.DownloadLink == ""
+}
+
+func (dl *DownloadLink) String() string {
+	return dl.DownloadLink
 }

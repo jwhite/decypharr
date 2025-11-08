@@ -2,13 +2,15 @@ package web
 
 import (
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/store"
-	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/sirrobot01/decypharr/pkg/wire"
+	"golang.org/x/crypto/bcrypt"
+
 	"encoding/json"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/request"
@@ -18,8 +20,8 @@ import (
 )
 
 func (wb *Web) handleGetArrs(w http.ResponseWriter, r *http.Request) {
-	_store := store.Get()
-	request.JSONResponse(w, _store.Arr().GetAll(), http.StatusOK)
+	arrStorage := wire.Get().Arr()
+	request.JSONResponse(w, arrStorage.GetAll(), http.StatusOK)
 }
 
 func (wb *Web) handleAddContent(w http.ResponseWriter, r *http.Request) {
@@ -28,9 +30,9 @@ func (wb *Web) handleAddContent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_store := store.Get()
+	_store := wire.Get()
 
-	results := make([]*store.ImportRequest, 0)
+	results := make([]*wire.ImportRequest, 0)
 	errs := make([]string, 0)
 
 	arrName := r.FormValue("arr")
@@ -41,8 +43,16 @@ func (wb *Web) handleAddContent(w http.ResponseWriter, r *http.Request) {
 	if downloadFolder == "" {
 		downloadFolder = config.Get().QBitTorrent.DownloadFolder
 	}
+	skipMultiSeason := r.FormValue("skipMultiSeason") == "true"
 
 	downloadUncached := r.FormValue("downloadUncached") == "true"
+	rmTrackerUrls := r.FormValue("rmTrackerUrls") == "true"
+
+	// Check config setting - if always remove tracker URLs is enabled, force it to true
+	cfg := config.Get()
+	if cfg.QBitTorrent.AlwaysRmTrackerUrls {
+		rmTrackerUrls = true
+	}
 
 	_arr := _store.Arr().Get(arrName)
 	if _arr == nil {
@@ -60,13 +70,13 @@ func (wb *Web) handleAddContent(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, url := range urlList {
-			magnet, err := utils.GetMagnetFromUrl(url)
+			magnet, err := utils.GetMagnetFromUrl(url, rmTrackerUrls)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("Failed to parse URL %s: %v", url, err))
 				continue
 			}
 
-			importReq := store.NewImportRequest(debridName, downloadFolder, magnet, _arr, action, downloadUncached, callbackUrl, store.ImportTypeAPI)
+			importReq := wire.NewImportRequest(debridName, downloadFolder, magnet, _arr, action, downloadUncached, callbackUrl, wire.ImportTypeAPI, skipMultiSeason)
 			if err := _store.AddTorrent(ctx, importReq); err != nil {
 				wb.logger.Error().Err(err).Str("url", url).Msg("Failed to add torrent")
 				errs = append(errs, fmt.Sprintf("URL %s: %v", url, err))
@@ -85,13 +95,13 @@ func (wb *Web) handleAddContent(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			magnet, err := utils.GetMagnetFromFile(file, fileHeader.Filename)
+			magnet, err := utils.GetMagnetFromFile(file, fileHeader.Filename, rmTrackerUrls)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("Failed to parse torrent file %s: %v", fileHeader.Filename, err))
 				continue
 			}
 
-			importReq := store.NewImportRequest(debridName, downloadFolder, magnet, _arr, action, downloadUncached, callbackUrl, store.ImportTypeAPI)
+			importReq := wire.NewImportRequest(debridName, downloadFolder, magnet, _arr, action, downloadUncached, callbackUrl, wire.ImportTypeAPI, skipMultiSeason)
 			err = _store.AddTorrent(ctx, importReq)
 			if err != nil {
 				wb.logger.Error().Err(err).Str("file", fileHeader.Filename).Msg("Failed to add torrent")
@@ -103,8 +113,8 @@ func (wb *Web) handleAddContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	request.JSONResponse(w, struct {
-		Results []*store.ImportRequest `json:"results"`
-		Errors  []string               `json:"errors,omitempty"`
+		Results []*wire.ImportRequest `json:"results"`
+		Errors  []string              `json:"errors,omitempty"`
 	}{
 		Results: results,
 		Errors:  errs,
@@ -118,7 +128,7 @@ func (wb *Web) handleRepairMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_store := store.Get()
+	_store := wire.Get()
 
 	var arrs []string
 
@@ -183,38 +193,9 @@ func (wb *Web) handleDeleteTorrents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (wb *Web) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	// Merge config arrs, with arr Storage
-	unique := map[string]config.Arr{}
+	arrStorage := wire.Get().Arr()
 	cfg := config.Get()
-	arrStorage := store.Get().Arr()
-
-	// Add existing Arrs from storage
-	for _, a := range arrStorage.GetAll() {
-		if _, ok := unique[a.Name]; !ok {
-			// Only add if not already in the unique map
-			unique[a.Name] = config.Arr{
-				Name:             a.Name,
-				Host:             a.Host,
-				Token:            a.Token,
-				Cleanup:          a.Cleanup,
-				SkipRepair:       a.SkipRepair,
-				DownloadUncached: a.DownloadUncached,
-				SelectedDebrid:   a.SelectedDebrid,
-				Source:           a.Source,
-			}
-		}
-	}
-
-	for _, a := range cfg.Arrs {
-		if a.Host == "" || a.Token == "" {
-			continue // Skip empty arrs
-		}
-		unique[a.Name] = a
-	}
-	cfg.Arrs = make([]config.Arr, 0, len(unique))
-	for _, a := range unique {
-		cfg.Arrs = append(cfg.Arrs, a)
-	}
+	cfg.Arrs = arrStorage.SyncToConfig()
 
 	// Create response with API token info
 	type ConfigResponse struct {
@@ -256,6 +237,7 @@ func (wb *Web) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	currentConfig.RemoveStalledAfter = updatedConfig.RemoveStalledAfter
 	currentConfig.AllowedExt = updatedConfig.AllowedExt
 	currentConfig.DiscordWebhook = updatedConfig.DiscordWebhook
+	currentConfig.CallbackURL = updatedConfig.CallbackURL
 
 	// Should this be added?
 	currentConfig.URLBase = updatedConfig.URLBase
@@ -270,13 +252,10 @@ func (wb *Web) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	currentConfig.Rclone = updatedConfig.Rclone
 
 	// Update Debrids
-	if len(updatedConfig.Debrids) > 0 {
-		currentConfig.Debrids = updatedConfig.Debrids
-		// Clear legacy single debrid if using array
-	}
+	currentConfig.Debrids = updatedConfig.Debrids
 
 	// Update Arrs through the service
-	storage := store.Get()
+	storage := wire.Get()
 	arrStorage := storage.Arr()
 
 	newConfigArrs := make([]config.Arr, 0)
@@ -289,28 +268,8 @@ func (wb *Web) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	currentConfig.Arrs = newConfigArrs
 
-	// Add config arr into the config
-	for _, a := range currentConfig.Arrs {
-		if a.Host == "" || a.Token == "" {
-			continue // Skip empty arrs
-		}
-		existingArr := arrStorage.Get(a.Name)
-		if existingArr != nil {
-			// Update existing Arr
-			existingArr.Host = a.Host
-			existingArr.Token = a.Token
-			existingArr.Cleanup = a.Cleanup
-			existingArr.SkipRepair = a.SkipRepair
-			existingArr.DownloadUncached = a.DownloadUncached
-			existingArr.SelectedDebrid = a.SelectedDebrid
-			existingArr.Source = a.Source
-			arrStorage.AddOrUpdate(existingArr)
-		} else {
-			// Create new Arr if it doesn't exist
-			newArr := arr.New(a.Name, a.Host, a.Token, a.Cleanup, a.SkipRepair, a.DownloadUncached, a.SelectedDebrid, a.Source)
-			arrStorage.AddOrUpdate(newArr)
-		}
-	}
+	// Sync arrStorage with the new arrs
+	arrStorage.SyncFromConfig(currentConfig.Arrs)
 
 	if err := currentConfig.Save(); err != nil {
 		http.Error(w, "Error saving config: "+err.Error(), http.StatusInternalServerError)
@@ -320,7 +279,7 @@ func (wb *Web) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if restartFunc != nil {
 		go func() {
 			// Small delay to ensure the response is sent
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			restartFunc()
 		}()
 	}
@@ -330,7 +289,7 @@ func (wb *Web) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (wb *Web) handleGetRepairJobs(w http.ResponseWriter, r *http.Request) {
-	_store := store.Get()
+	_store := wire.Get()
 	request.JSONResponse(w, _store.Repair().GetJobs(), http.StatusOK)
 }
 
@@ -340,7 +299,7 @@ func (wb *Web) handleProcessRepairJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No job ID provided", http.StatusBadRequest)
 		return
 	}
-	_store := store.Get()
+	_store := wire.Get()
 	if err := _store.Repair().ProcessJob(id); err != nil {
 		wb.logger.Error().Err(err).Msg("Failed to process repair job")
 	}
@@ -361,7 +320,7 @@ func (wb *Web) handleDeleteRepairJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_store := store.Get()
+	_store := wire.Get()
 	_store.Repair().DeleteJobs(req.IDs)
 	w.WriteHeader(http.StatusOK)
 }
@@ -372,7 +331,7 @@ func (wb *Web) handleStopRepairJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No job ID provided", http.StatusBadRequest)
 		return
 	}
-	_store := store.Get()
+	_store := wire.Get()
 	if err := _store.Repair().StopJob(id); err != nil {
 		wb.logger.Error().Err(err).Msg("Failed to stop repair job")
 		http.Error(w, "Failed to stop job: "+err.Error(), http.StatusInternalServerError)

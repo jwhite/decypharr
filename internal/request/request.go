@@ -299,40 +299,7 @@ func New(options ...ClientOption) *Client {
 		}
 
 		// Configure proxy if needed
-		if client.proxy != "" {
-			if strings.HasPrefix(client.proxy, "socks5://") {
-				// Handle SOCKS5 proxy
-				socksURL, err := url.Parse(client.proxy)
-				if err != nil {
-					client.logger.Error().Msgf("Failed to parse SOCKS5 proxy URL: %v", err)
-				} else {
-					auth := &proxy.Auth{}
-					if socksURL.User != nil {
-						auth.User = socksURL.User.Username()
-						password, _ := socksURL.User.Password()
-						auth.Password = password
-					}
-
-					dialer, err := proxy.SOCKS5("tcp", socksURL.Host, auth, proxy.Direct)
-					if err != nil {
-						client.logger.Error().Msgf("Failed to create SOCKS5 dialer: %v", err)
-					} else {
-						transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-							return dialer.Dial(network, addr)
-						}
-					}
-				}
-			} else {
-				proxyURL, err := url.Parse(client.proxy)
-				if err != nil {
-					client.logger.Error().Msgf("Failed to parse proxy URL: %v", err)
-				} else {
-					transport.Proxy = http.ProxyURL(proxyURL)
-				}
-			}
-		} else {
-			transport.Proxy = http.ProxyFromEnvironment
-		}
+		SetProxy(transport, client.proxy)
 
 		// Set the transport to the client
 		client.client.Transport = transport
@@ -417,4 +384,81 @@ func isRetryableError(err error) bool {
 
 	// Not a retryable error
 	return false
+}
+
+func SetProxy(transport *http.Transport, proxyURL string) {
+	if proxyURL != "" {
+		if strings.HasPrefix(proxyURL, "socks5://") {
+			// Handle SOCKS5 proxy
+			socksURL, err := url.Parse(proxyURL)
+			if err != nil {
+				return
+			} else {
+				auth := &proxy.Auth{}
+				if socksURL.User != nil {
+					auth.User = socksURL.User.Username()
+					password, _ := socksURL.User.Password()
+					auth.Password = password
+				}
+
+				dialer, err := proxy.SOCKS5("tcp", socksURL.Host, auth, proxy.Direct)
+				if err != nil {
+					return
+				} else {
+					transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+						return dialer.Dial(network, addr)
+					}
+				}
+			}
+		} else {
+			_proxy, err := url.Parse(proxyURL)
+			if err != nil {
+				return
+			} else {
+				transport.Proxy = http.ProxyURL(_proxy)
+			}
+		}
+	} else {
+		transport.Proxy = http.ProxyFromEnvironment
+	}
+	return
+}
+
+func ValidateURL(urlStr string) error {
+	if urlStr == "" {
+		return fmt.Errorf("URL cannot be empty")
+	}
+
+	// Try parsing as full URL first
+	u, err := url.Parse(urlStr)
+	if err == nil && u.Scheme != "" && u.Host != "" {
+		// It's a full URL, validate scheme
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("URL scheme must be http or https")
+		}
+		return nil
+	}
+
+	// Check if it's a host:port format (no scheme)
+	if strings.Contains(urlStr, ":") && !strings.Contains(urlStr, "://") {
+		// Try parsing with http:// prefix
+		testURL := "http://" + urlStr
+		u, err := url.Parse(testURL)
+		if err != nil {
+			return fmt.Errorf("invalid host:port format: %w", err)
+		}
+
+		if u.Host == "" {
+			return fmt.Errorf("host is required in host:port format")
+		}
+
+		// Validate port number
+		if u.Port() == "" {
+			return fmt.Errorf("port is required in host:port format")
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("invalid URL format: %s", urlStr)
 }

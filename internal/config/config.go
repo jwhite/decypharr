@@ -49,14 +49,15 @@ type Debrid struct {
 }
 
 type QBitTorrent struct {
-	Username        string   `json:"username,omitempty"`
-	Password        string   `json:"password,omitempty"`
-	Port            string   `json:"port,omitempty"` // deprecated
-	DownloadFolder  string   `json:"download_folder,omitempty"`
-	Categories      []string `json:"categories,omitempty"`
-	RefreshInterval int      `json:"refresh_interval,omitempty"`
-	SkipPreCache    bool     `json:"skip_pre_cache,omitempty"`
-	MaxDownloads    int      `json:"max_downloads,omitempty"`
+	Username          	string   `json:"username,omitempty"`
+	Password          	string   `json:"password,omitempty"`
+	Port              	string   `json:"port,omitempty"` // deprecated
+	DownloadFolder    	string   `json:"download_folder,omitempty"`
+	Categories        	[]string `json:"categories,omitempty"`
+	RefreshInterval   	int      `json:"refresh_interval,omitempty"`
+	SkipPreCache      	bool     `json:"skip_pre_cache,omitempty"`
+	MaxDownloads      	int      `json:"max_downloads,omitempty"`
+	AlwaysRmTrackerUrls bool     `json:"always_rm_tracker_urls,omitempty"`
 }
 
 type Arr struct {
@@ -91,6 +92,7 @@ type Rclone struct {
 	// Global mount folder where all providers will be mounted as subfolders
 	Enabled   bool   `json:"enabled,omitempty"`
 	MountPath string `json:"mount_path,omitempty"`
+	RcPort    string `json:"rc_port,omitempty"`
 
 	// Cache settings
 	CacheDir string `json:"cache_dir,omitempty"`
@@ -98,13 +100,21 @@ type Rclone struct {
 	// VFS settings
 	VfsCacheMode          string `json:"vfs_cache_mode,omitempty"`            // off, minimal, writes, full
 	VfsCacheMaxAge        string `json:"vfs_cache_max_age,omitempty"`         // Maximum age of objects in the cache (default 1h)
+	VfsDiskSpaceTotal     string `json:"vfs_disk_space_total,omitempty"`      // Total disk space available for the cache (default off)
 	VfsCacheMaxSize       string `json:"vfs_cache_max_size,omitempty"`        // Maximum size of the cache (default off)
 	VfsCachePollInterval  string `json:"vfs_cache_poll_interval,omitempty"`   // How often to poll for changes (default 1m)
 	VfsReadChunkSize      string `json:"vfs_read_chunk_size,omitempty"`       // Read chunk size (default 128M)
 	VfsReadChunkSizeLimit string `json:"vfs_read_chunk_size_limit,omitempty"` // Max chunk size (default off)
 	VfsReadAhead          string `json:"vfs_read_ahead,omitempty"`            // read ahead size
-	VfsPollInterval       string `json:"vfs_poll_interval,omitempty"`         // How often to rclone cleans the cache (default 1m)
 	BufferSize            string `json:"buffer_size,omitempty"`               // Buffer size for reading files (default 16M)
+	BwLimit               string `json:"bw_limit,omitempty"`                  // Bandwidth limit (default off)
+
+	VfsCacheMinFreeSpace string `json:"vfs_cache_min_free_space,omitempty"`
+	VfsFastFingerprint   bool   `json:"vfs_fast_fingerprint,omitempty"`
+	VfsReadChunkStreams  int    `json:"vfs_read_chunk_streams,omitempty"`
+	AsyncRead            *bool  `json:"async_read,omitempty"` // Use async read for files
+	Transfers            int    `json:"transfers,omitempty"`  // Number of transfers to use (default 4)
+	UseMmap              bool   `json:"use_mmap,omitempty"`
 
 	// File system settings
 	UID   uint32 `json:"uid,omitempty"` // User ID for mounted files
@@ -143,6 +153,8 @@ type Config struct {
 	Auth               *Auth       `json:"-"`
 	DiscordWebhook     string      `json:"discord_webhook_url,omitempty"`
 	RemoveStalledAfter string      `json:"remove_stalled_after,omitzero"`
+	CallbackURL        string      `json:"callback_url,omitempty"`
+	EnableWebdavAuth   bool        `json:"enable_webdav_auth,omitempty"`
 }
 
 func (c *Config) JsonFile() string {
@@ -299,6 +311,10 @@ func (c *Config) IsSizeAllowed(size int64) bool {
 	return true
 }
 
+func (c *Config) SecretKey() string {
+	return cmp.Or(os.Getenv("DECYPHARR_SECRET_KEY"), "\"wqj(v%lj*!-+kf@4&i95rhh_!5_px5qnuwqbr%cjrvrozz_r*(\"")
+}
+
 func (c *Config) GetAuth() *Auth {
 	if !c.UseAuth {
 		return nil
@@ -324,15 +340,12 @@ func (c *Config) SaveAuth(auth *Auth) error {
 	return os.WriteFile(c.AuthFile(), data, 0644)
 }
 
-func (c *Config) NeedsSetup() error {
+func (c *Config) CheckSetup() error {
 	return ValidateConfig(c)
 }
 
 func (c *Config) NeedsAuth() bool {
-	if c.UseAuth {
-		return c.GetAuth().Username == ""
-	}
-	return false
+	return c.UseAuth && (c.Auth == nil || c.Auth.Username == "" || c.Auth.Password == "")
 }
 
 func (c *Config) updateDebrid(d Debrid) Debrid {
@@ -417,6 +430,11 @@ func (c *Config) setDefaults() {
 
 	// Rclone defaults
 	if c.Rclone.Enabled {
+		c.Rclone.RcPort = cmp.Or(c.Rclone.RcPort, "5572")
+		if c.Rclone.AsyncRead == nil {
+			_asyncTrue := true
+			c.Rclone.AsyncRead = &_asyncTrue
+		}
 		c.Rclone.VfsCacheMode = cmp.Or(c.Rclone.VfsCacheMode, "off")
 		if c.Rclone.UID == 0 {
 			c.Rclone.UID = uint32(os.Getuid())
@@ -428,6 +446,9 @@ func (c *Config) setDefaults() {
 			} else {
 				c.Rclone.GID = uint32(os.Getgid())
 			}
+		}
+		if c.Rclone.Transfers == 0 {
+			c.Rclone.Transfers = 4 // Default number of transfers
 		}
 		if c.Rclone.VfsCacheMode != "off" {
 			c.Rclone.VfsCachePollInterval = cmp.Or(c.Rclone.VfsCachePollInterval, "1m") // Clean cache every minute

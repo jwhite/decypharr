@@ -11,6 +11,7 @@ require (
 	github.com/go-co-op/gocron/v2 v2.16.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.4.0
+	github.com/puzpuzpuz/xsync/v4 v4.1.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.33.0
 	github.com/stanNthe5/stringbuf v0.0.3

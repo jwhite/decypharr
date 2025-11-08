@@ -1,6 +1,7 @@
 package debrid
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/logger"
+	"github.com/sirrobot01/decypharr/internal/request"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/arr"
+	"github.com/sirrobot01/decypharr/pkg/debrid/common"
 	"github.com/sirrobot01/decypharr/pkg/debrid/providers/alldebrid"
 	"github.com/sirrobot01/decypharr/pkg/debrid/providers/debridlink"
 	"github.com/sirrobot01/decypharr/pkg/debrid/providers/realdebrid"
@@ -18,14 +21,15 @@ import (
 	debridStore "github.com/sirrobot01/decypharr/pkg/debrid/store"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"github.com/sirrobot01/decypharr/pkg/rclone"
+	"go.uber.org/ratelimit"
 )
 
 type Debrid struct {
 	cache  *debridStore.Cache // Could be nil if not using WebDAV
-	client types.Client       // HTTP client for making requests to the debrid service
+	client common.Client      // HTTP client for making requests to the debrid service
 }
 
-func (de *Debrid) Client() types.Client {
+func (de *Debrid) Client() common.Client {
 	return de.client
 }
 
@@ -105,12 +109,54 @@ func (d *Storage) StartWorker(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	// Start all debrid syncAccounts
-	// Runs every 1m
-	if err := d.syncAccounts(); err != nil {
-		return err
+	// Start syncAccounts worker
+	go d.syncAccountsWorker(ctx)
+
+	// Start bandwidth reset worker
+	go d.checkBandwidthWorker(ctx)
+
+	return nil
+}
+
+func (d *Storage) checkBandwidthWorker(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(30 * time.Minute)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				d.checkAccountBandwidth()
+			}
+		}
+	}()
+}
+
+func (d *Storage) checkAccountBandwidth() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for _, debrid := range d.debrids {
+		if debrid == nil || debrid.client == nil {
+			continue
+		}
+		accountManager := debrid.client.AccountManager()
+		if accountManager == nil {
+			continue
+		}
+		accountManager.CheckAndResetBandwidth()
+	}
+}
+
+func (d *Storage) syncAccountsWorker(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
+	_ = d.syncAccounts()
 	ticker := time.NewTicker(5 * time.Minute)
 	go func() {
 		for {
@@ -122,8 +168,6 @@ func (d *Storage) StartWorker(ctx context.Context) error {
 			}
 		}
 	}()
-
-	return nil
 }
 
 func (d *Storage) syncAccounts() error {
@@ -160,7 +204,7 @@ func (d *Storage) Debrids() map[string]*Debrid {
 	return debridsCopy
 }
 
-func (d *Storage) Client(name string) types.Client {
+func (d *Storage) Client(name string) common.Client {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -187,11 +231,10 @@ func (d *Storage) Reset() {
 	d.lastUsed = ""
 }
 
-func (d *Storage) Clients() map[string]types.Client {
+func (d *Storage) Clients() map[string]common.Client {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
-	clientsCopy := make(map[string]types.Client)
+	clientsCopy := make(map[string]common.Client)
 	for name, debrid := range d.debrids {
 		if debrid != nil && debrid.client != nil {
 			clientsCopy[name] = debrid.client
@@ -215,11 +258,10 @@ func (d *Storage) Caches() map[string]*debridStore.Cache {
 	return cachesCopy
 }
 
-func (d *Storage) FilterClients(filter func(types.Client) bool) map[string]types.Client {
+func (d *Storage) FilterClients(filter func(common.Client) bool) map[string]common.Client {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	filteredClients := make(map[string]types.Client)
+	filteredClients := make(map[string]common.Client)
 	for name, client := range d.debrids {
 		if client != nil && filter(client.client) {
 			filteredClients[name] = client.client
@@ -229,18 +271,28 @@ func (d *Storage) FilterClients(filter func(types.Client) bool) map[string]types
 	return filteredClients
 }
 
-func createDebridClient(dc config.Debrid) (types.Client, error) {
+func createDebridClient(dc config.Debrid) (common.Client, error) {
+	rateLimits := map[string]ratelimit.Limiter{}
+
+	mainRL := request.ParseRateLimit(dc.RateLimit)
+	repairRL := request.ParseRateLimit(cmp.Or(dc.RepairRateLimit, dc.RateLimit))
+	downloadRL := request.ParseRateLimit(cmp.Or(dc.DownloadRateLimit, dc.RateLimit))
+
+	rateLimits["main"] = mainRL
+	rateLimits["repair"] = repairRL
+	rateLimits["download"] = downloadRL
+
 	switch dc.Name {
 	case "realdebrid":
-		return realdebrid.New(dc)
+		return realdebrid.New(dc, rateLimits)
 	case "torbox":
-		return torbox.New(dc)
+		return torbox.New(dc, rateLimits)
 	case "debridlink":
-		return debridlink.New(dc)
+		return debridlink.New(dc, rateLimits)
 	case "alldebrid":
-		return alldebrid.New(dc)
+		return alldebrid.New(dc, rateLimits)
 	default:
-		return realdebrid.New(dc)
+		return realdebrid.New(dc, rateLimits)
 	}
 }
 
@@ -254,7 +306,7 @@ func Process(ctx context.Context, store *Storage, selectedDebrid string, magnet 
 		Files:    make(map[string]types.File),
 	}
 
-	clients := store.FilterClients(func(c types.Client) bool {
+	clients := store.FilterClients(func(c common.Client) bool {
 		if selectedDebrid != "" && c.Name() != selectedDebrid {
 			return false
 		}
@@ -270,13 +322,9 @@ func Process(ctx context.Context, store *Storage, selectedDebrid string, magnet 
 
 	// Override first, arr second, debrid third
 
-	if overrideDownloadUncached {
-		debridTorrent.DownloadUncached = true
-	} else if a.DownloadUncached != nil {
+	if !overrideDownloadUncached && a.DownloadUncached != nil {
 		// Arr cached is set
-		debridTorrent.DownloadUncached = *a.DownloadUncached
-	} else {
-		debridTorrent.DownloadUncached = false
+		overrideDownloadUncached = *a.DownloadUncached
 	}
 
 	for _, db := range clients {
@@ -289,8 +337,9 @@ func Process(ctx context.Context, store *Storage, selectedDebrid string, magnet 
 			Str("Action", action).
 			Msg("Processing torrent")
 
-		if !overrideDownloadUncached && a.DownloadUncached == nil {
-			debridTorrent.DownloadUncached = db.GetDownloadUncached()
+		// If debrid.DownloadUnached is true, it overrides everything
+		if db.GetDownloadUncached() || overrideDownloadUncached {
+			debridTorrent.DownloadUncached = true
 		}
 
 		dbt, err := db.SubmitMagnet(debridTorrent)

@@ -1,8 +1,11 @@
-package store
+package wire
 
 import (
 	"cmp"
 	"context"
+	"sync"
+	"time"
+
 	"github.com/go-co-op/gocron/v2"
 	"github.com/rs/zerolog"
 	"github.com/sirrobot01/decypharr/internal/config"
@@ -11,8 +14,6 @@ import (
 	"github.com/sirrobot01/decypharr/pkg/debrid"
 	"github.com/sirrobot01/decypharr/pkg/rclone"
 	"github.com/sirrobot01/decypharr/pkg/repair"
-	"sync"
-	"time"
 )
 
 type Store struct {
@@ -86,7 +87,10 @@ func Reset() {
 		}
 
 		if instance.rcloneManager != nil {
-			instance.rcloneManager.Stop()
+			err := instance.rcloneManager.Stop()
+			if err != nil {
+				instance.logger.Error().Err(err).Msg("Failed to stop rclone manager")
+			}
 		}
 
 		if instance.importsQueue != nil {
@@ -98,7 +102,6 @@ func Reset() {
 		}
 
 		if instance.scheduler != nil {
-			_ = instance.scheduler.StopJobs()
 			_ = instance.scheduler.Shutdown()
 		}
 	}

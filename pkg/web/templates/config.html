@@ -1,5 +1,15 @@
 {{ define "config" }}
 <div class="space-y-6">
+    {{ if .NeedSetup }}
+    <div role="alert" class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle text-xl"></i>
+        <div>
+            <h3 class="font-bold">Configuration Required</h3>
+            <div class="text-sm">Your configuration is incomplete. Please complete the setup below.</div>
+        </div>
+    </div>
+    {{ end }}
+
     <form id="configForm" class="space-y-6">
         <div class="card bg-base-100 shadow-xl">
             <div class="card-body">
@@ -120,7 +130,7 @@
                                 </div>
                             </div>
 
-                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                 <div class="form-control">
                                     <label class="label" for="minFileSize">
                                         <span class="label-text font-medium">Minimum File Size</span>
@@ -148,6 +158,15 @@
                                     <input type="text" class="input input-bordered" id="removeStalledAfter" name="remove_stalled_after" placeholder="1h">
                                     <div class="label">
                                         <span class="label-text-alt">Duration before removing stalled torrents</span>
+                                    </div>
+                                </div>
+                                <div class="form-control">
+                                    <label class="label" for="callbackUrl">
+                                        <span class="label-text font-medium">Callback URL</span>
+                                    </label>
+                                    <input type="text" class="input input-bordered" id="callbackUrl" name="callback_url" placeholder="http://example.com/callback">
+                                    <div class="label">
+                                        <span class="label-text-alt">Optional callback URL for download status updates</span>
                                     </div>
                                 </div>
                             </div>
@@ -327,6 +346,16 @@
                                         </div>
                                     </label>
                                 </div>
+
+                                <div class="form-control">
+                                    <label class="label cursor-pointer justify-start gap-3">
+                                        <input type="checkbox" class="checkbox" name="qbit.always_rm_tracker_urls" id="qbit.always_rm_tracker_urls">
+                                        <div>
+                                            <span class="label-text font-medium">Always Remove Tracker URLs</span>
+                                            <div class="label-text-alt">Allows you to <a href="https://sirrobot01.github.io/decypharr/features/repair-worker/private-tracker-downloads" class="link link-hover font-semibold" target="_blank">download private tracker torrents</a> with lower risk</div>
+                                        </div>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -364,71 +393,68 @@
                             </div>
 
                             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                                <div class="space-y-4">
-                                    <div class="form-control">
-                                        <label class="label" for="repair.interval">
-                                            <span class="label-text font-medium">Repair Interval</span>
-                                        </label>
-                                        <input type="text" class="input input-bordered" name="repair.interval" id="repair.interval" placeholder="24h">
-                                        <div class="label">
-                                            <span class="label-text-alt">How often to run repair (e.g., 24h, 1d, 03:00, or crontab)</span>
-                                        </div>
-                                    </div>
-
-                                    <div class="form-control">
-                                        <label class="label" for="repair.workers">
-                                            <span class="label-text font-medium">Worker Threads</span>
-                                        </label>
-                                        <input type="number" class="input input-bordered" name="repair.workers" id="repair.workers" min="1" placeholder="40">
-                                        <div class="label">
-                                            <span class="label-text-alt">Number of concurrent repair workers</span>
-                                        </div>
-                                    </div>
-
-                                    <div class="form-control">
-                                        <label class="label" for="repair.strategy">
-                                            <span class="label-text font-medium">Repair Strategy</span>
-                                        </label>
-                                        <select class="select select-bordered" name="repair.strategy" id="repair.strategy">
-                                            <option value="per_torrent" selected>Per Torrent</option>
-                                            <option value="per_file">Per File</option>
-                                        </select>
-                                        <div class="label">
-                                            <span class="label-text-alt">How to handle repairs</span>
-                                        </div>
+                                <div class="form-control">
+                                    <label class="label" for="repair.interval">
+                                        <span class="label-text font-medium">Repair Interval</span>
+                                    </label>
+                                    <input type="text" class="input input-bordered" name="repair.interval" id="repair.interval" placeholder="24h">
+                                    <div class="label">
+                                        <span class="label-text-alt">How often to run repair (e.g., 24h, 1d, 03:00, or crontab)</span>
                                     </div>
                                 </div>
 
-                                <div class="space-y-4">
-                                    <div class="form-control">
-                                        <label class="label" for="repair.zurg_url">
-                                            <span class="label-text font-medium">Zurg URL</span>
-                                        </label>
-                                        <input type="url" class="input input-bordered" name="repair.zurg_url" id="repair.zurg_url" placeholder="http://zurg:9999">
-                                        <div class="label">
-                                            <span class="label-text-alt">Optional Zurg instance to speed up repairs</span>
+                                <div class="form-control">
+                                    <label class="label" for="repair.workers">
+                                        <span class="label-text font-medium">Worker Threads</span>
+                                    </label>
+                                    <input type="number" class="input input-bordered" name="repair.workers" id="repair.workers" min="1" placeholder="40">
+                                    <div class="label">
+                                        <span class="label-text-alt">Number of concurrent repair workers</span>
+                                    </div>
+                                </div>
+
+                                <div class="form-control">
+                                    <label class="label" for="repair.strategy">
+                                        <span class="label-text font-medium">Repair Strategy</span>
+                                    </label>
+                                    <select class="select select-bordered" name="repair.strategy" id="repair.strategy">
+                                        <option value="per_torrent" selected>Per Torrent</option>
+                                        <option value="per_file">Per File</option>
+                                    </select>
+                                    <div class="label">
+                                        <span class="label-text-alt">How to handle repairs</span>
+                                    </div>
+                                </div>
+                                <div class="form-control">
+                                    <label class="label" for="repair.zurg_url">
+                                        <span class="label-text font-medium">Zurg URL</span>
+                                    </label>
+                                    <input type="url" class="input input-bordered" name="repair.zurg_url" id="repair.zurg_url" placeholder="http://zurg:9999">
+                                    <div class="label">
+                                        <span class="label-text-alt">Optional Zurg instance to speed up repairs</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div class="form-control">
+                                    <label class="label cursor-pointer justify-start gap-3">
+                                        <input type="checkbox" class="checkbox" name="repair.use_webdav" id="repair.use_webdav">
+                                        <div>
+                                            <span class="label-text font-medium">Use WebDAV</span>
+                                            <div class="label-text-alt">Use internal WebDAV for repairs</div>
                                         </div>
-                                    </div>
+                                    </label>
+                                </div>
 
-                                    <div class="form-control">
-                                        <label class="label cursor-pointer justify-start gap-3">
-                                            <input type="checkbox" class="checkbox" name="repair.use_webdav" id="repair.use_webdav">
-                                            <div>
-                                                <span class="label-text font-medium">Use WebDAV</span>
-                                                <div class="label-text-alt">Use internal WebDAV for repairs</div>
-                                            </div>
-                                        </label>
-                                    </div>
-
-                                    <div class="form-control">
-                                        <label class="label cursor-pointer justify-start gap-3">
-                                            <input type="checkbox" class="checkbox" name="repair.auto_process" id="repair.auto_process">
-                                            <div>
-                                                <span class="label-text font-medium">Auto Process</span>
-                                                <div class="label-text-alt">Automatically delete broken symlinks and re-search</div>
-                                            </div>
-                                        </label>
-                                    </div>
+                                <div class="form-control">
+                                    <label class="label cursor-pointer justify-start gap-3">
+                                        <input type="checkbox" class="checkbox" name="repair.auto_process" id="repair.auto_process">
+                                        <div>
+                                            <span class="label-text font-medium">Auto Process</span>
+                                            <div class="label-text-alt">Automatically delete broken symlinks and re-search</div>
+                                        </div>
+                                    </label>
                                 </div>
                             </div>
                         </div>
@@ -455,7 +481,7 @@
                                     <h3 class="text-lg font-semibold mb-4 flex items-center">
                                         <i class="bi bi-folder mr-2"></i>Mount Configuration
                                     </h3>
-                                    <div class="grid grid-cols-3 gap-4">
+                                    <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
                                         <div class="form-control">
                                             <label class="label" for="rclone.mount_path">
                                                 <span class="label-text font-medium">Global Mount Path</span>
@@ -464,6 +490,13 @@
                                             <div class="label">
                                                 <span class="label-text-alt">Base directory where all providers will be mounted (e.g., /mnt/decypharr)</span>
                                             </div>
+                                        </div>
+
+                                        <div class="form-control">
+                                            <label class="label" for="rclone.rc_port">
+                                                <span class="label-text font-medium">RC Port</span>
+                                            </label>
+                                            <input type="text" class="input input-bordered" name="rclone.rc_port" id="rclone.rc_port">
                                         </div>
 
                                         <div class="form-control">
@@ -510,9 +543,18 @@
                                             <label class="label" for="rclone.buffer_size">
                                                 <span class="label-text font-medium">Buffer Size</span>
                                             </label>
-                                            <input type="text" class="input input-bordered" name="rclone.buffer_size" id="rclone.buffer_size" placeholder="10M" min="0">
+                                            <input type="text" class="input input-bordered" name="rclone.buffer_size" id="rclone.buffer_size" placeholder="10M">
                                             <div class="label">
                                                 <span class="label-text-alt">Buffer Size(This caches to memory, be wary!!)</span>
+                                            </div>
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label" for="rclone.bw_limit">
+                                                <span class="label-text font-medium">Bandwidth Limit</span>
+                                            </label>
+                                            <input type="text" class="input input-bordered" name="rclone.bw_limit" id="rclone.bw_limit" placeholder="100M">
+                                            <div class="label">
+                                                <span class="label-text-alt">Bandwidth limit (e.g., 100M, 1G, leave empty for unlimited)</span>
                                             </div>
                                         </div>
                                         <div class="form-control">
@@ -522,6 +564,15 @@
                                             <input type="text" class="input input-bordered" name="rclone.attr_timeout" id="rclone.attr_timeout" placeholder="1s">
                                             <div class="label">
                                                 <span class="label-text-alt">How long the kernel caches the attributes (size, modification time, etc.)</span>
+                                            </div>
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label" for="rclone.transfers">
+                                                <span class="label-text font-medium">Transfers</span>
+                                            </label>
+                                            <input type="number" class="input input-bordered" name="rclone.transfers" id="rclone.transfers" placeholder="8" min="1">
+                                            <div class="label">
+                                                <span class="label-text-alt">Number of file transfers to run in parallel</span>
                                             </div>
                                         </div>
                                     </div>
@@ -627,6 +678,36 @@
                                                 <span class="label-text-alt">How often VFS cache dir gets cleaned</span>
                                             </div>
                                         </div>
+
+                                        <div class="form-control">
+                                            <label class="label" for="rclone.vfs_cache_min_free_space">
+                                                <span class="label-text font-medium">VFS Cache Min Free Space</span>
+                                            </label>
+                                            <input type="text" class="input input-bordered" name="rclone.vfs_cache_min_free_space" id="rclone.vfs_cache_min_free_space" placeholder="1G">
+                                            <div class="label">
+                                                <span class="label-text-alt">Target minimum free space on the disk containing the cache</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="form-control">
+                                            <label class="label" for="rclone.vfs_disk_space_total">
+                                                <span class="label-text font-medium">VFS Disk Space Total</span>
+                                            </label>
+                                            <input type="text" class="input input-bordered" name="rclone.vfs_disk_space_total" id="rclone.vfs_disk_space_total" placeholder="1G">
+                                            <div class="label">
+                                                <span class="label-text-alt">Specify the total space of disk</span>
+                                            </div>
+                                        </div>
+
+                                        <div class="form-control">
+                                            <label class="label" for="rclone.vfs_read_chunk_streams">
+                                                <span class="label-text font-medium">VFS Read Chunk Streams</span>
+                                            </label>
+                                            <input type="number" class="input input-bordered" name="rclone.vfs_read_chunk_streams" id="rclone.vfs_read_chunk_streams" placeholder="4" min="0">
+                                            <div class="label">
+                                                <span class="label-text-alt">The number of parallel streams to read at once</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -636,7 +717,7 @@
                                     <h3 class="text-lg font-semibold mb-4 flex items-center">
                                         <i class="bi bi-gear mr-2"></i>Advanced Settings
                                     </h3>
-                                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                    <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
                                         <div class="form-control">
                                             <label class="label cursor-pointer justify-start gap-3">
                                                 <input type="checkbox" class="checkbox" name="rclone.no_modtime" id="rclone.no_modtime">
@@ -653,6 +734,36 @@
                                                 <div>
                                                     <span class="label-text font-medium">No Checksum</span>
                                                     <div class="label-text-alt">Don't checksum files on upload</div>
+                                                </div>
+                                            </label>
+                                        </div>
+
+                                        <div class="form-control">
+                                            <label class="label cursor-pointer justify-start gap-3" for="rclone.async_read">
+                                                <input type="checkbox" class="checkbox" name="rclone.async_read" id="rclone.async_read">
+                                                <div>
+                                                    <span class="label-text font-medium">Async Read</span>
+                                                    <div class="label-text-alt">Use asynchronous reads</div>
+                                                </div>
+                                            </label>
+                                        </div>
+
+                                        <div class="form-control">
+                                            <label class="label cursor-pointer justify-start gap-3" for="rclone.vfs_fast_fingerprint">
+                                                <input type="checkbox" class="checkbox" name="rclone.vfs_fast_fingerprint" id="rclone.vfs_fast_fingerprint">
+                                                <div>
+                                                    <span class="label-text font-medium">VFS Fast Fingerprint</span>
+                                                    <div class="label-text-alt">Use fast (less accurate) fingerprints for change detection</div>
+                                                </div>
+                                            </label>
+                                        </div>
+
+                                        <div class="form-control">
+                                            <label class="label cursor-pointer justify-start gap-3" for="rclone.use_mmap">
+                                                <input type="checkbox" class="checkbox" name="rclone.use_mmap" id="rclone.use_mmap">
+                                                <div>
+                                                    <span class="label-text font-medium">Use Mmap</span>
+                                                    <div class="label-text-alt">Use fast (less accurate) fingerprints for change detection</div>
                                                 </div>
                                             </label>
                                         </div>

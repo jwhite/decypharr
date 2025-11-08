@@ -4,9 +4,10 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/rclone"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,7 +18,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/puzpuzpuz/xsync/v4"
+	"github.com/sirrobot01/decypharr/pkg/debrid/common"
+	"github.com/sirrobot01/decypharr/pkg/rclone"
+
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
+	"golang.org/x/sync/singleflight"
 
 	"encoding/json"
 	_ "time/tzdata"
@@ -72,18 +78,18 @@ type RepairRequest struct {
 
 type Cache struct {
 	dir    string
-	client types.Client
+	client common.Client
 	logger zerolog.Logger
 
-	torrents             *torrentCache
-	invalidDownloadLinks sync.Map
-	folderNaming         WebDavFolderNaming
+	torrents     *torrentCache
+	folderNaming WebDavFolderNaming
 
 	listingDebouncer *utils.Debouncer[bool]
 	// monitors
-	repairRequest        sync.Map
-	failedToReinsert     sync.Map
-	downloadLinkRequests sync.Map
+	invalidDownloadLinks *xsync.Map[string, string]
+	repairRequest        *xsync.Map[string, *reInsertRequest]
+	failedToReinsert     *xsync.Map[string, struct{}]
+	failedLinksCounter   *xsync.Map[string, atomic.Int32] // link -> counter
 
 	// repair
 	repairChan chan RepairRequest
@@ -108,9 +114,11 @@ type Cache struct {
 	config        config.Debrid
 	customFolders []string
 	mounter       *rclone.Mount
+	downloadSG    singleflight.Group
+	streamClient  *http.Client
 }
 
-func NewDebridCache(dc config.Debrid, client types.Client, mounter *rclone.Mount) *Cache {
+func NewDebridCache(dc config.Debrid, client common.Client, mounter *rclone.Mount) *Cache {
 	cfg := config.Get()
 	cet, err := time.LoadLocation("CET")
 	if err != nil {
@@ -153,6 +161,21 @@ func NewDebridCache(dc config.Debrid, client types.Client, mounter *rclone.Mount
 
 	}
 	_log := logger.New(fmt.Sprintf("%s-webdav", client.Name()))
+	transport := &http.Transport{
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       90 * time.Second,
+		DisableKeepAlives:     false,
+		ForceAttemptHTTP2:     false,
+	}
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   0,
+	}
+
 	c := &Cache{
 		dir: filepath.Join(cfg.Path, "cache", dc.Name), // path to save cache files
 
@@ -171,7 +194,13 @@ func NewDebridCache(dc config.Debrid, client types.Client, mounter *rclone.Mount
 		customFolders: customFolders,
 		mounter:       mounter,
 
-		ready: make(chan struct{}),
+		ready:                make(chan struct{}),
+		invalidDownloadLinks: xsync.NewMap[string, string](),
+		repairRequest:        xsync.NewMap[string, *reInsertRequest](),
+		failedToReinsert:     xsync.NewMap[string, struct{}](),
+		failedLinksCounter:   xsync.NewMap[string, atomic.Int32](),
+		streamClient:         httpClient,
+		repairChan:           make(chan RepairRequest, 100), // Initialize the repair channel, max 100 requests buffered
 	}
 
 	c.listingDebouncer = utils.NewDebouncer[bool](100*time.Millisecond, func(refreshRclone bool) {
@@ -202,14 +231,12 @@ func (c *Cache) Reset() {
 		}
 	}
 
-	if err := c.scheduler.StopJobs(); err != nil {
-		c.logger.Error().Err(err).Msg("Failed to stop scheduler jobs")
-	}
-
-	if err := c.scheduler.Shutdown(); err != nil {
-		c.logger.Error().Err(err).Msg("Failed to stop scheduler")
-	}
-
+	go func() {
+		// Shutdown the scheduler (this will stop all jobs)
+		if err := c.scheduler.Shutdown(); err != nil {
+			c.logger.Error().Err(err).Msg("Failed to stop scheduler")
+		}
+	}()
 	// Stop the listing debouncer
 	c.listingDebouncer.Stop()
 
@@ -222,10 +249,9 @@ func (c *Cache) Reset() {
 	c.torrents.reset()
 
 	// 3. Clear any sync.Maps
-	c.invalidDownloadLinks = sync.Map{}
-	c.repairRequest = sync.Map{}
-	c.failedToReinsert = sync.Map{}
-	c.downloadLinkRequests = sync.Map{}
+	c.invalidDownloadLinks = xsync.NewMap[string, string]()
+	c.repairRequest = xsync.NewMap[string, *reInsertRequest]()
+	c.failedToReinsert = xsync.NewMap[string, struct{}]()
 
 	// 5. Rebuild the listing debouncer
 	c.listingDebouncer = utils.NewDebouncer[bool](
@@ -258,7 +284,6 @@ func (c *Cache) Start(ctx context.Context) error {
 
 	// initial download links
 	go c.refreshDownloadLinks(ctx)
-	c.repairChan = make(chan RepairRequest, 100) // Initialize the repair channel, max 100 requests buffered
 	go c.repairWorker(ctx)
 
 	cfg := config.Get()
@@ -534,7 +559,7 @@ func (c *Cache) setTorrent(t CachedTorrent, callback func(torrent CachedTorrent)
 		mergedFiles := mergeFiles(o, updatedTorrent) // Useful for merging files across multiple torrents, while keeping the most recent
 		updatedTorrent.Files = mergedFiles
 	}
-	c.torrents.set(torrentName, t, updatedTorrent)
+	c.torrents.set(torrentName, t)
 	go c.SaveTorrent(t)
 	if callback != nil {
 		go callback(updatedTorrent)
@@ -550,7 +575,7 @@ func (c *Cache) setTorrents(torrents map[string]CachedTorrent, callback func()) 
 			mergedFiles := mergeFiles(o, updatedTorrent)
 			updatedTorrent.Files = mergedFiles
 		}
-		c.torrents.set(torrentName, t, updatedTorrent)
+		c.torrents.set(torrentName, t)
 	}
 	c.SaveTorrents()
 	if callback != nil {
@@ -750,7 +775,7 @@ func (c *Cache) Add(t *types.Torrent) error {
 
 }
 
-func (c *Cache) Client() types.Client {
+func (c *Cache) Client() common.Client {
 	return c.client
 }
 

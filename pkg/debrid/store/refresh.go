@@ -3,13 +3,14 @@ package store
 import (
 	"context"
 	"fmt"
-	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 )
 
 type fileInfo struct {
@@ -120,7 +121,7 @@ func (c *Cache) refreshTorrents(ctx context.Context) {
 	close(workChan)
 	wg.Wait()
 
-	c.listingDebouncer.Call(false)
+	c.listingDebouncer.Call(true)
 
 	c.logger.Debug().Msgf("Processed %d new torrents", counter)
 }
@@ -243,14 +244,10 @@ func (c *Cache) refreshDownloadLinks(ctx context.Context) {
 	}
 	defer c.downloadLinksRefreshMu.Unlock()
 
-	links, err := c.client.GetDownloadLinks()
-
-	if err != nil {
+	if err := c.client.RefreshDownloadLinks(); err != nil {
 		c.logger.Error().Err(err).Msg("Failed to get download links")
 		return
 	}
 
-	c.client.Accounts().SetDownloadLinks(links)
-
-	c.logger.Debug().Msgf("Refreshed download %d links", c.client.Accounts().GetLinksCount())
+	c.logger.Debug().Msgf("Refreshed download links")
 }

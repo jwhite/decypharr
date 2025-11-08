@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
+
+	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/sirrobot01/decypharr/internal/config"
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
-	"sync"
-	"time"
 )
 
 type reInsertRequest struct {
@@ -59,6 +61,8 @@ func (c *Cache) markAsSuccessfullyReinserted(torrentId string) {
 	}
 }
 
+// GetBrokenFiles checks the files in the torrent for broken links.
+// It also attempts to reinsert the torrent if any files are broken.
 func (c *Cache) GetBrokenFiles(t *CachedTorrent, filenames []string) []string {
 	files := make(map[string]types.File)
 	repairStrategy := config.Get().Repair.Strategy
@@ -217,8 +221,7 @@ func (c *Cache) reInsertTorrent(ct *CachedTorrent) (*CachedTorrent, error) {
 	if _, ok := c.failedToReinsert.Load(oldID); ok {
 		return ct, fmt.Errorf("can't retry re-insert for %s", torrent.Id)
 	}
-	if reqI, inFlight := c.repairRequest.Load(oldID); inFlight {
-		req := reqI.(*reInsertRequest)
+	if req, inFlight := c.repairRequest.Load(oldID); inFlight {
 		c.logger.Debug().Msgf("Waiting for existing reinsert request to complete for torrent %s", oldID)
 		return req.Wait()
 	}
@@ -232,12 +235,13 @@ func (c *Cache) reInsertTorrent(ct *CachedTorrent) (*CachedTorrent, error) {
 
 	// Submit the magnet to the debrid service
 	newTorrent := &types.Torrent{
-		Name:     torrent.Name,
-		Magnet:   utils.ConstructMagnet(torrent.InfoHash, torrent.Name),
-		InfoHash: torrent.InfoHash,
-		Size:     torrent.Size,
-		Files:    make(map[string]types.File),
-		Arr:      torrent.Arr,
+		Name:             torrent.Name,
+		Magnet:           utils.ConstructMagnet(torrent.InfoHash, torrent.Name),
+		InfoHash:         torrent.InfoHash,
+		Size:             torrent.Size,
+		Files:            make(map[string]types.File),
+		Arr:              torrent.Arr,
+		DownloadUncached: false,
 	}
 	var err error
 	newTorrent, err = c.client.SubmitMagnet(newTorrent)
@@ -260,7 +264,7 @@ func (c *Cache) reInsertTorrent(ct *CachedTorrent) (*CachedTorrent, error) {
 			_ = c.client.DeleteTorrent(newTorrent.Id)
 		}
 		c.markAsFailedToReinsert(oldID)
-		return ct, err
+		return ct, fmt.Errorf("failed to check torrent: %w", err)
 	}
 
 	// Update the torrent in the cache
@@ -293,7 +297,7 @@ func (c *Cache) reInsertTorrent(ct *CachedTorrent) (*CachedTorrent, error) {
 		}
 	}
 
-	req.Complete(ct, err)
+	req.Complete(ct, nil)
 	c.markAsSuccessfullyReinserted(oldID)
 
 	c.logger.Debug().Str("torrentId", torrent.Id).Msg("Torrent successfully reinserted")
@@ -303,9 +307,8 @@ func (c *Cache) reInsertTorrent(ct *CachedTorrent) (*CachedTorrent, error) {
 
 func (c *Cache) resetInvalidLinks(ctx context.Context) {
 	c.logger.Debug().Msgf("Resetting accounts")
-	c.invalidDownloadLinks = sync.Map{}
-	c.client.Accounts().Reset() // Reset the active download keys
-
+	c.invalidDownloadLinks = xsync.NewMap[string, string]()
+	c.client.AccountManager().Reset() // Reset the active download keys
 	// Refresh the download links
 	c.refreshDownloadLinks(ctx)
 }

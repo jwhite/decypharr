@@ -3,86 +3,72 @@ package store
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
+
 	"github.com/sirrobot01/decypharr/internal/utils"
 	"github.com/sirrobot01/decypharr/pkg/debrid/types"
 )
 
-type downloadLinkRequest struct {
-	result string
-	err    error
-	done   chan struct{}
-}
+const (
+	MaxLinkFailures = 10
+)
 
-func newDownloadLinkRequest() *downloadLinkRequest {
-	return &downloadLinkRequest{
-		done: make(chan struct{}),
+func (c *Cache) GetDownloadLink(torrentName, filename, fileLink string) (types.DownloadLink, error) {
+	// Check
+	counter, ok := c.failedLinksCounter.Load(fileLink)
+	if ok && counter.Load() >= MaxLinkFailures {
+		return types.DownloadLink{}, fmt.Errorf("file link %s has failed %d times, not retrying", fileLink, counter.Load())
 	}
-}
 
-func (r *downloadLinkRequest) Complete(result string, err error) {
-	r.result = result
-	r.err = err
-	close(r.done)
-}
+	// Use singleflight to deduplicate concurrent requests
+	v, err, _ := c.downloadSG.Do(fileLink, func() (interface{}, error) {
+		// Double-check cache inside singleflight (another goroutine might have filled it)
+		if dl, err := c.checkDownloadLink(fileLink); err == nil && !dl.Empty() {
+			return dl, nil
+		}
 
-func (r *downloadLinkRequest) Wait() (string, error) {
-	<-r.done
-	return r.result, r.err
-}
+		// Fetch the download link
+		dl, err := c.fetchDownloadLink(torrentName, filename, fileLink)
+		if err != nil {
+			c.downloadSG.Forget(fileLink)
+			return types.DownloadLink{}, err
+		}
 
-func (c *Cache) GetDownloadLink(torrentName, filename, fileLink string) (string, error) {
-	// Check link cache
-	if dl, err := c.checkDownloadLink(fileLink); dl != "" && err == nil {
+		if dl.Empty() {
+			c.downloadSG.Forget(fileLink)
+			err = fmt.Errorf("download link is empty for %s in torrent %s", filename, torrentName)
+			return types.DownloadLink{}, err
+		}
+
 		return dl, nil
-	}
+	})
 
-	if req, inFlight := c.downloadLinkRequests.Load(fileLink); inFlight {
-		// Wait for the other request to complete and use its result
-		result := req.(*downloadLinkRequest)
-		return result.Wait()
-	}
-
-	// Create a new request object
-	req := newDownloadLinkRequest()
-	c.downloadLinkRequests.Store(fileLink, req)
-
-	dl, err := c.fetchDownloadLink(torrentName, filename, fileLink)
 	if err != nil {
-		req.Complete("", err)
-		c.downloadLinkRequests.Delete(fileLink)
-		return "", err
+		return types.DownloadLink{}, err
 	}
-
-	if dl == nil || dl.DownloadLink == "" {
-		err = fmt.Errorf("download link is empty for %s in torrent %s", filename, torrentName)
-		req.Complete("", err)
-		c.downloadLinkRequests.Delete(fileLink)
-		return "", err
-	}
-	req.Complete(dl.DownloadLink, err)
-	c.downloadLinkRequests.Delete(fileLink)
-	return dl.DownloadLink, err
+	return v.(types.DownloadLink), nil
 }
 
-func (c *Cache) fetchDownloadLink(torrentName, filename, fileLink string) (*types.DownloadLink, error) {
+func (c *Cache) fetchDownloadLink(torrentName, filename, fileLink string) (types.DownloadLink, error) {
+	emptyDownloadLink := types.DownloadLink{}
 	ct := c.GetTorrentByName(torrentName)
 	if ct == nil {
-		return nil, fmt.Errorf("torrent not found")
+		return emptyDownloadLink, fmt.Errorf("torrent not found")
 	}
 	file, ok := ct.GetFile(filename)
 	if !ok {
-		return nil, fmt.Errorf("file %s not found in torrent %s", filename, torrentName)
+		return emptyDownloadLink, fmt.Errorf("file %s not found in torrent %s", filename, torrentName)
 	}
 
 	if file.Link == "" {
 		// file link is empty, refresh the torrent to get restricted links
 		ct = c.refreshTorrent(file.TorrentId) // Refresh the torrent from the debrid
 		if ct == nil {
-			return nil, fmt.Errorf("failed to refresh torrent")
+			return emptyDownloadLink, fmt.Errorf("failed to refresh torrent")
 		} else {
 			file, ok = ct.GetFile(filename)
 			if !ok {
-				return nil, fmt.Errorf("file %s not found in refreshed torrent %s", filename, torrentName)
+				return emptyDownloadLink, fmt.Errorf("file %s not found in refreshed torrent %s", filename, torrentName)
 			}
 		}
 	}
@@ -92,12 +78,12 @@ func (c *Cache) fetchDownloadLink(torrentName, filename, fileLink string) (*type
 		// Try to reinsert the torrent?
 		newCt, err := c.reInsertTorrent(ct)
 		if err != nil {
-			return nil, fmt.Errorf("failed to reinsert torrent. %w", err)
+			return emptyDownloadLink, fmt.Errorf("failed to reinsert torrent. %w", err)
 		}
 		ct = newCt
 		file, ok = ct.GetFile(filename)
 		if !ok {
-			return nil, fmt.Errorf("file %s not found in reinserted torrent %s", filename, torrentName)
+			return emptyDownloadLink, fmt.Errorf("file %s not found in reinserted torrent %s", filename, torrentName)
 		}
 	}
 
@@ -106,41 +92,39 @@ func (c *Cache) fetchDownloadLink(torrentName, filename, fileLink string) (*type
 	if err != nil {
 		if errors.Is(err, utils.HosterUnavailableError) {
 			c.logger.Trace().
+				Str("token", utils.Mask(downloadLink.Token)).
 				Str("filename", filename).
 				Str("torrent_id", ct.Id).
 				Msg("Hoster unavailable, attempting to reinsert torrent")
 
 			newCt, err := c.reInsertTorrent(ct)
 			if err != nil {
-				return nil, fmt.Errorf("failed to reinsert torrent: %w", err)
+				return emptyDownloadLink, fmt.Errorf("failed to reinsert torrent: %w", err)
 			}
 			ct = newCt
 			file, ok = ct.GetFile(filename)
 			if !ok {
-				return nil, fmt.Errorf("file %s not found in reinserted torrent %s", filename, torrentName)
+				return emptyDownloadLink, fmt.Errorf("file %s not found in reinserted torrent %s", filename, torrentName)
 			}
 			// Retry getting the download link
 			downloadLink, err = c.client.GetDownloadLink(ct.Torrent, &file)
 			if err != nil {
-				return nil, fmt.Errorf("retry failed to get download link: %w", err)
+				return emptyDownloadLink, fmt.Errorf("retry failed to get download link: %w", err)
 			}
-			if downloadLink == nil {
-				return nil, fmt.Errorf("download link is empty after retry")
+			if downloadLink.Empty() {
+				return emptyDownloadLink, fmt.Errorf("download link is empty after retry")
 			}
-			return nil, nil
+			return emptyDownloadLink, fmt.Errorf("download link is empty after retry")
 		} else if errors.Is(err, utils.TrafficExceededError) {
 			// This is likely a fair usage limit error
-			return nil, err
+			return emptyDownloadLink, err
 		} else {
-			return nil, fmt.Errorf("failed to get download link: %w", err)
+			return emptyDownloadLink, fmt.Errorf("failed to get download link: %w", err)
 		}
 	}
-	if downloadLink == nil {
-		return nil, fmt.Errorf("download link is empty")
+	if downloadLink.Empty() {
+		return emptyDownloadLink, fmt.Errorf("download link is empty")
 	}
-
-	// Set link to cache
-	go c.client.Accounts().SetDownloadLink(fileLink, downloadLink)
 	return downloadLink, nil
 }
 
@@ -151,34 +135,65 @@ func (c *Cache) GetFileDownloadLinks(t CachedTorrent) {
 	}
 }
 
-func (c *Cache) checkDownloadLink(link string) (string, error) {
-
-	dl, err := c.client.Accounts().GetDownloadLink(link)
+func (c *Cache) checkDownloadLink(link string) (types.DownloadLink, error) {
+	dl, err := c.client.AccountManager().GetDownloadLink(link)
 	if err != nil {
-		return "", err
+		return dl, err
 	}
 	if !c.downloadLinkIsInvalid(dl.DownloadLink) {
-		return dl.DownloadLink, nil
+		return dl, nil
 	}
-	return "", fmt.Errorf("download link not found for %s", link)
+	return types.DownloadLink{}, fmt.Errorf("download link not found for %s", link)
 }
 
-func (c *Cache) MarkDownloadLinkAsInvalid(link, downloadLink, reason string) {
-	c.invalidDownloadLinks.Store(downloadLink, reason)
+func (c *Cache) IncrementFailedLinkCounter(link string) int32 {
+	counter, _ := c.failedLinksCounter.LoadOrCompute(link, func() (atomic.Int32, bool) {
+		return atomic.Int32{}, true
+	})
+	return counter.Add(1)
+}
+
+func (c *Cache) MarkLinkAsInvalid(downloadLink types.DownloadLink, reason string) {
+	// Increment file link error counter
+	c.IncrementFailedLinkCounter(downloadLink.Link)
+
+	c.invalidDownloadLinks.Store(downloadLink.DownloadLink, reason)
 	// Remove the download api key from active
 	if reason == "bandwidth_exceeded" {
 		// Disable the account
-		_, account, err := c.client.Accounts().GetDownloadLinkWithAccount(link)
+		accountManager := c.client.AccountManager()
+		account, err := accountManager.GetAccount(downloadLink.Token)
 		if err != nil {
+			c.logger.Error().Err(err).Str("token", utils.Mask(downloadLink.Token)).Msg("Failed to get account to disable")
 			return
 		}
-		c.client.Accounts().Disable(account)
+		if account == nil {
+			c.logger.Error().Str("token", utils.Mask(downloadLink.Token)).Msg("Account not found to disable")
+			return
+		}
+		accountManager.Disable(account)
+	} else if reason == "link_not_found" {
+		// Let's try to delete the download link from the account, so we can fetch a new one next time
+		accountManager := c.client.AccountManager()
+		account, err := accountManager.GetAccount(downloadLink.Token)
+		if err != nil {
+			c.logger.Error().Err(err).Str("token", utils.Mask(downloadLink.Token)).Msg("Failed to get account to delete download link")
+			return
+		}
+		if account == nil {
+			c.logger.Error().Str("token", utils.Mask(downloadLink.Token)).Msg("Account not found to delete download link")
+			return
+		}
+
+		if err := c.client.DeleteDownloadLink(account, downloadLink); err != nil {
+			c.logger.Error().Err(err).Str("token", utils.Mask(downloadLink.Token)).Msg("Failed to delete download link from account")
+			return
+		}
 	}
 }
 
 func (c *Cache) downloadLinkIsInvalid(downloadLink string) bool {
-	if reason, ok := c.invalidDownloadLinks.Load(downloadLink); ok {
-		c.logger.Debug().Msgf("Download link %s is invalid: %s", downloadLink, reason)
+	if _, ok := c.invalidDownloadLinks.Load(downloadLink); ok {
 		return true
 	}
 	return false
@@ -194,5 +209,10 @@ func (c *Cache) GetDownloadByteRange(torrentName, filename string) (*[2]int64, e
 }
 
 func (c *Cache) GetTotalActiveDownloadLinks() int {
-	return c.client.Accounts().GetLinksCount()
+	total := 0
+	allAccounts := c.client.AccountManager().Active()
+	for _, acc := range allAccounts {
+		total += acc.DownloadLinksCount()
+	}
+	return total
 }

@@ -2,9 +2,10 @@ package web
 
 import (
 	"encoding/json"
+	"net/http"
+
 	"github.com/sirrobot01/decypharr/internal/config"
 	"golang.org/x/crypto/bcrypt"
-	"net/http"
 )
 
 func (wb *Web) LoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -113,9 +114,11 @@ func (wb *Web) RegisterHandler(w http.ResponseWriter, r *http.Request) {
 func (wb *Web) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	data := map[string]interface{}{
-		"URLBase": cfg.URLBase,
-		"Page":    "index",
-		"Title":   "Torrents",
+		"URLBase":    cfg.URLBase,
+		"Page":       "index",
+		"Title":      "Torrents",
+		"NeedSetup":  cfg.CheckSetup() != nil,
+		"SetupError": cfg.CheckSetup(),
 	}
 	_ = wb.templates.ExecuteTemplate(w, "layout", data)
 }
@@ -127,12 +130,15 @@ func (wb *Web) DownloadHandler(w http.ResponseWriter, r *http.Request) {
 		debrids = append(debrids, d.Name)
 	}
 	data := map[string]interface{}{
-		"URLBase":        cfg.URLBase,
-		"Page":           "download",
-		"Title":          "Download",
-		"Debrids":        debrids,
-		"HasMultiDebrid": len(debrids) > 1,
-		"DownloadFolder": cfg.QBitTorrent.DownloadFolder,
+		"URLBase":             	cfg.URLBase,
+		"Page":                	"download",
+		"Title":               	"Download",
+		"Debrids":             	debrids,
+		"HasMultiDebrid":      	len(debrids) > 1,
+		"DownloadFolder":      	cfg.QBitTorrent.DownloadFolder,
+		"AlwaysRmTrackerUrls": 	cfg.QBitTorrent.AlwaysRmTrackerUrls,
+		"NeedSetup":           	cfg.CheckSetup() != nil,
+		"SetupError":          	cfg.CheckSetup(),
 	}
 	_ = wb.templates.ExecuteTemplate(w, "layout", data)
 }
@@ -140,9 +146,11 @@ func (wb *Web) DownloadHandler(w http.ResponseWriter, r *http.Request) {
 func (wb *Web) RepairHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	data := map[string]interface{}{
-		"URLBase": cfg.URLBase,
-		"Page":    "repair",
-		"Title":   "Repair",
+		"URLBase":    cfg.URLBase,
+		"Page":       "repair",
+		"Title":      "Repair",
+		"NeedSetup":  cfg.CheckSetup() != nil,
+		"SetupError": cfg.CheckSetup(),
 	}
 	_ = wb.templates.ExecuteTemplate(w, "layout", data)
 }
@@ -150,9 +158,11 @@ func (wb *Web) RepairHandler(w http.ResponseWriter, r *http.Request) {
 func (wb *Web) ConfigHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := config.Get()
 	data := map[string]interface{}{
-		"URLBase": cfg.URLBase,
-		"Page":    "config",
-		"Title":   "Config",
+		"URLBase":    cfg.URLBase,
+		"Page":       "config",
+		"Title":      "Config",
+		"NeedSetup":  cfg.CheckSetup() != nil,
+		"SetupError": cfg.CheckSetup(),
 	}
 	_ = wb.templates.ExecuteTemplate(w, "layout", data)
 }
